@@ -3275,14 +3275,22 @@ Support`;
   function computeVerdict(system, findings, recs){
     const criticalCount = findings.filter(f=>f.sev==='danger').length;
     const warnCount = findings.filter(f=>f.sev==='warn').length;
-    const hasSafeOrModerateFix = recs.some(r=>r.risk==='safe' || r.risk==='moderate');
+    // A rec's risk label alone doesn't mean it's actually usable right now —
+    // applySafetyModel can BLOCK even a 'safe'/'moderate' rec when required
+    // evidence (status output, replica health, a backup) is missing. The
+    // most common case is the very first step of an incident: only logs
+    // have been pasted, no status yet. Without this check the banner would
+    // say "a safe path exists" while every visible command is locked.
+    const hasSafeOrModerateFix = recs.some(r=>(r.risk==='safe' || r.risk==='moderate') && r.safetyStatus !== 'blocked');
     const onlyDestructiveFix = recs.length>0 && recs.every(r=>r.risk==='destructive');
     const noFixAtAll = recs.length===0 && criticalCount>0;
+    const allBlocked = recs.length>0 && recs.every(r=>r.safetyStatus==='blocked');
 
     let urgency;
     if(system==='unknown') urgency = 'unclear';
     else if(criticalCount===0) urgency = 'stable';
     else if(hasSafeOrModerateFix) urgency = 'urgent-safe';
+    else if(allBlocked) urgency = 'urgent-blocked';
     else urgency = 'urgent-risky';
 
     const shouldEscalate = system==='unknown' || criticalCount>=3 || noFixAtAll || onlyDestructiveFix;
@@ -3295,6 +3303,8 @@ Support`;
                       reason:(v)=> v.warnCount ? `No critical findings (${v.warnCount} warning${v.warnCount>1?'s':''} to review).` : 'No critical findings detected.' },
     'urgent-safe': { icon:'⚠', label:'Act now — a safe path exists', tone:'warn',
                       reason:(v)=> `${v.criticalCount} critical finding${v.criticalCount>1?'s':''} detected, but Immediate Actions includes a SAFE or moderate-risk fix.` },
+    'urgent-blocked': { icon:'🔒', label:'Evidence needed before any action', tone:'warn',
+                      reason:(v)=> `${v.criticalCount} critical finding${v.criticalCount>1?'s':''} detected. Every suggested action is currently BLOCKED pending evidence (see Recommendations) — collect it first, a safe path may open up.` },
     'urgent-risky':{ icon:'🔴', label:'Urgent — no safe automated fix', tone:'danger',
                       reason:(v)=> `${v.criticalCount} critical finding${v.criticalCount>1?'s':''} detected with no safe suggested fix. Consider escalating.` },
     unclear:       { icon:'?', label:'Unclear — system not identified', tone:'info',

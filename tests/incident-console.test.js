@@ -1322,6 +1322,38 @@ async function run() {
     });
   });
 
+  await suite('Verdict does not claim a "safe path" when the only fixes are blocked pending evidence', async () => {
+    const { window, doc } = await loadDom();
+    // Regression guard: applySafetyModel can BLOCK a 'safe'/'moderate' rec
+    // when required evidence (status output, replica health, backup) is
+    // missing — most commonly the very first step of an incident, logs
+    // pasted but no status yet. computeVerdict must not call a rec usable
+    // just because of its risk LABEL if it's actually locked right now.
+    doc.getElementById('logsInput').value = '[ERROR][o.e.i.e.Engine] [orders][2] CorruptIndexException[checksum failed]';
+    doc.getElementById('statusInput').value = ''; // deliberately no status
+    click(doc.querySelector('#systemPicker button[data-val="elasticsearch"]'), window);
+    click(doc.getElementById('analyzeBtn'), window);
+    await wait(300);
+    await test('Every rendered recommendation is actually blocked in this scenario', async () => {
+      click(doc.querySelector('.tab[data-tab="preporuke"]'), window);
+      const cards = doc.querySelectorAll('#recsList .rec');
+      assert(cards.length > 0, 'expected at least one recommendation to inspect');
+      cards.forEach(c => assert(c.querySelector('.rec-safety-box.blocked'), 'expected every rec to be blocked in this evidence-free scenario'));
+    });
+    await test('The verdict banner says evidence is needed, NOT that a safe path exists', async () => {
+      const t = doc.getElementById('verdictBannerWrap').textContent;
+      assertIncludes(t, 'Evidence needed');
+      assertNotIncludes(t, 'a safe path exists');
+    });
+    await test('With status output present and a genuinely usable safe/moderate fix, the verdict still says a safe path exists', async () => {
+      click(doc.querySelector('#sampleLinks button[data-s="elasticsearch"]'), window);
+      click(doc.getElementById('analyzeBtn'), window);
+      await wait(300);
+      const t = doc.getElementById('verdictBannerWrap').textContent;
+      assertIncludes(t, 'a safe path exists');
+    });
+  });
+
   await suite('Quick-actions bar and the sticky verdict bar do not collide (both sticky at top:53)', async () => {
     const { window, doc } = await loadDom();
     // Regression guard: verdict-sticky and quick-actions are both
