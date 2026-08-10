@@ -2448,9 +2448,27 @@ FROM system.replicas WHERE is_readonly;</pre>`,
     if(!target || !sticky) return;
     verdictObserver = new IntersectionObserver((entries)=>{
       entries.forEach(entry=> sticky.classList.toggle('vs-visible', !entry.isIntersecting));
+      repositionQuickActions();
     }, { threshold: 0, rootMargin: '-53px 0px 0px 0px' });
     verdictObserver.observe(target);
   }
+
+  // Both the compact verdict bar and the quick-actions bar are
+  // position:sticky at the same top:53px — by design they serve different
+  // purposes (urgency vs. next-step buttons) so neither should replace the
+  // other, but CSS sticky doesn't stack same-offset siblings on its own:
+  // once BOTH are stuck, they'd render on top of each other (verdict-sticky
+  // has the higher z-index and would silently hide the actions bar). This
+  // pushes quick-actions down by the verdict bar's own height whenever it's
+  // actually stuck, and back to 53px the moment it isn't.
+  function repositionQuickActions(){
+    const qa = document.getElementById('quickActions');
+    const vs = document.getElementById('verdictStickyWrap');
+    if(!qa || !vs) return;
+    const extra = vs.classList.contains('vs-visible') ? vs.getBoundingClientRect().height : 0;
+    qa.style.top = (53 + extra) + 'px';
+  }
+  window.addEventListener('resize', repositionQuickActions);
 
   // Dismissible, single-line — no new tab, no grouped findings model, just
   // a nudge plus a one-click system switch (the person still clicks Analyze
@@ -2576,6 +2594,7 @@ FROM system.replicas WHERE is_readonly;</pre>`,
     check.style.display = canCheck ? '' : 'none';
     document.getElementById('qaCustomerMessage').textContent = state.current.rawStatus && state.current.rawStatus.trim()
       ? 'Copy acknowledgment' : 'Request missing status';
+    repositionQuickActions();
   }
 
 
@@ -3752,7 +3771,16 @@ ${dangers.length ? `Open critical issue${dangers.length>1?'s':''}: ${dangers.map
       flags, table: result.table, rawLogs: logs, rawStatus: status, stopDismissed: false, stage: 'diagnosing',
       hasPreviousAnalysis: !!(previous && previous.findings && previous.findings.length),
       auditLog: (previous && previous.auditLog) ? previous.auditLog.slice() : [],
-      otherSystemsDetected: ['instana','elasticsearch','clickhouse','kafka'].includes(system) ? detectOtherSystems(logs, status, system) : []
+      // Instana self-hosted runs its own Elasticsearch/ClickHouse/Kafka
+      // internally, so its logs routinely match those systems' detect
+      // regexes too — that's expected substrate, not a second incident.
+      // The notice only makes sense comparing the three actual datastores
+      // against EACH OTHER (e.g. an ES incident whose paste also has real
+      // Kafka errors). If the analyzed system is Instana, or if the only
+      // "other" hit found is Instana itself, there's nothing to flag.
+      otherSystemsDetected: ['elasticsearch','clickhouse','kafka'].includes(system)
+        ? detectOtherSystems(logs, status, system).filter(k => k !== 'instana')
+        : []
     };
     state.findingsFilter = null; // a fresh analysis shouldn't inherit a stale filter
     state.history.push(state.current);
@@ -3802,6 +3830,8 @@ ${dangers.length ? `Open critical issue${dangers.length>1?'s':''}: ${dangers.map
     document.getElementById('stopBannerWrap').innerHTML = '';
     document.getElementById('multiSystemWrap').style.display = 'none';
     document.getElementById('multiSystemWrap').innerHTML = '';
+    document.getElementById('quickActions').classList.remove('visible');
+    document.getElementById('quickActions').style.top = '53px';
     document.getElementById('findingsList').innerHTML = '';
     document.getElementById('recsList').innerHTML = '';
     document.getElementById('preventiveList').innerHTML = '';

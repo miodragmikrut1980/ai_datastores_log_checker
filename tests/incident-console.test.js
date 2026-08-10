@@ -1322,6 +1322,33 @@ async function run() {
     });
   });
 
+  await suite('Quick-actions bar and the sticky verdict bar do not collide (both sticky at top:53)', async () => {
+    const { window, doc } = await loadDom();
+    // Regression guard: verdict-sticky and quick-actions are both
+    // position:sticky at top:53px (two independent, legitimately different
+    // bars — urgency vs. next-step actions). CSS alone doesn't stack same-
+    // offset sticky siblings, so once both are "stuck" the higher z-index
+    // one silently covers the other unless JS pushes the second one down by
+    // the first one's height. jsdom has no real layout engine, so this
+    // checks the coordination call happens and the reset path cleans up —
+    // the actual pixel geometry was verified manually in a real browser.
+    click(doc.querySelector('#sampleLinks button[data-s="elasticsearch"]'), window);
+    click(doc.getElementById('analyzeBtn'), window);
+    await wait(300);
+    await test('quickActions becomes visible and gets an explicit top offset after analysis', async () => {
+      const qa = doc.getElementById('quickActions');
+      assert(qa.classList.contains('visible'));
+      assert(qa.style.top, 'expected repositionQuickActions() to have set an explicit top');
+    });
+    await test('Clear hides quickActions and resets its offset (previously it stayed visible with stale buttons)', async () => {
+      click(doc.getElementById('resetBtn'), window); // arm
+      click(doc.getElementById('resetBtn'), window); // confirm
+      const qa = doc.getElementById('quickActions');
+      assert(!qa.classList.contains('visible'), 'quickActions must hide on Clear');
+      assertEqual(qa.style.top, '53px');
+    });
+  });
+
   await suite('Incident variables fill placeholders live in every command', async () => {
     const { window, doc } = await loadDom();
     // Needs a recommendation with a <namespace>/<pod-name> placeholder —
@@ -1435,6 +1462,23 @@ async function run() {
     click(doc.getElementById('analyzeBtn'), window);
     await wait(300);
     await test('No notice when the paste only matches one system', async () => {
+      assertEqual(doc.getElementById('multiSystemWrap').style.display, 'none');
+    });
+  });
+
+  await suite('Instana never triggers the multi-system notice against its own ES/CH/Kafka substrate', async () => {
+    const { window, doc } = await loadDom();
+    // Regression guard: Instana self-hosted runs its own Elasticsearch,
+    // ClickHouse, and Kafka internally, so its logs legitimately match all
+    // three systems' detect regexes. Flagging that as "also detected
+    // CLICKHOUSE/KAFKA/ELASTICSEARCH — treat as two incidents" would be an
+    // actively misleading false alarm during a real Instana incident.
+    click(doc.querySelector('#sampleLinks button[data-s="instana"]'), window);
+    const instanaBtn = doc.querySelector('#systemPicker button[data-val="instana"]');
+    if(instanaBtn) click(instanaBtn, window);
+    click(doc.getElementById('analyzeBtn'), window);
+    await wait(300);
+    await test('No multi-system notice appears when analyzed as Instana', async () => {
       assertEqual(doc.getElementById('multiSystemWrap').style.display, 'none');
     });
   });
