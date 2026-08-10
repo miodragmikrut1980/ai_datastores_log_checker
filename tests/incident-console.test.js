@@ -1322,6 +1322,42 @@ async function run() {
     });
   });
 
+  await suite('Quick-actions highlights "Edit evidence" as primary when everything is blocked', async () => {
+    const { window, doc } = await loadDom();
+    doc.getElementById('logsInput').value = '[ERROR][o.e.i.e.Engine] [orders][2] CorruptIndexException[checksum failed]';
+    doc.getElementById('statusInput').value = '';
+    click(doc.querySelector('#systemPicker button[data-val="elasticsearch"]'), window);
+    click(doc.getElementById('analyzeBtn'), window);
+    await wait(300);
+    await test('"Edit evidence" is primary, "View findings" is not, when every rec is blocked', async () => {
+      assert(doc.getElementById('qaInputs').classList.contains('primary'));
+      assert(!doc.getElementById('qaFindings').classList.contains('primary'));
+    });
+    await test('With a usable safe/moderate fix, "View findings" goes back to being primary', async () => {
+      click(doc.querySelector('#sampleLinks button[data-s="elasticsearch"]'), window);
+      click(doc.getElementById('analyzeBtn'), window);
+      await wait(300);
+      assert(doc.getElementById('qaFindings').classList.contains('primary'));
+      assert(!doc.getElementById('qaInputs').classList.contains('primary'));
+    });
+  });
+
+  await suite('A blocked recommendation cannot be marked Done', async () => {
+    const { window, doc } = await loadDom();
+    doc.getElementById('logsInput').value = '[ERROR][o.e.i.e.Engine] [orders][2] CorruptIndexException[checksum failed]';
+    doc.getElementById('statusInput').value = '';
+    click(doc.querySelector('#systemPicker button[data-val="elasticsearch"]'), window);
+    click(doc.getElementById('analyzeBtn'), window);
+    await wait(300);
+    click(doc.querySelector('.tab[data-tab="preporuke"]'), window);
+    await test('Checking a blocked rec\'s Done box reverts itself and warns instead of recording progress', async () => {
+      const cb = doc.querySelector('#recsList .rec-done');
+      cb.checked = true;
+      cb.dispatchEvent(new window.Event('change', { bubbles: true }));
+      assertEqual(cb.checked, false, 'the checkbox must revert — a blocked action was never actually run');
+    });
+  });
+
   await suite('Verdict does not claim a "safe path" when the only fixes are blocked pending evidence', async () => {
     const { window, doc } = await loadDom();
     // Regression guard: applySafetyModel can BLOCK a 'safe'/'moderate' rec

@@ -2305,7 +2305,7 @@ FROM system.replicas WHERE is_readonly;</pre>`,
           </div>
         </details>
         <div class="checklist-row">
-          <label><input type="checkbox" data-idx="${idx}" data-arr="${cmdPrefix}" class="rec-done"> Done</label>
+          <label${blocked ? ' data-tooltip="Blocked — collect the missing evidence above before this can be marked done" style="opacity:.6;"' : ''}><input type="checkbox" data-idx="${idx}" data-arr="${cmdPrefix}" class="rec-done"> Done</label>
           <span class="status-pill ${r.done?'done':'todo'}">${r.done?'Done':'Not started'}</span>
           <input type="text" data-idx="${idx}" data-arr="${cmdPrefix}" class="rec-assignee" placeholder="Assignee (name)" value="${escapeHtml(r.assignee||'')}">
         </div>
@@ -2316,7 +2316,17 @@ FROM system.replicas WHERE is_readonly;</pre>`,
     document.querySelectorAll('#'+containerId+' .rec-done').forEach((cb,i)=>{
       cb.checked = arr[i].done;
       cb.addEventListener('change', e=>{
-        arr[e.target.dataset.idx].done = e.target.checked;
+        const rec = arr[e.target.dataset.idx];
+        // A blocked rec's command was never actually runnable — checking
+        // Done here would record false progress (and a false "resolved"
+        // moment in the postmortem timeline). Require it to be unblocked
+        // first, same as the command itself is gated.
+        if(e.target.checked && rec.safetyStatus === 'blocked'){
+          e.target.checked = false;
+          toast('This action is still blocked — collect the missing evidence before marking it done');
+          return;
+        }
+        rec.done = e.target.checked;
         const pill = e.target.closest('.checklist-row').querySelector('.status-pill');
         pill.textContent = e.target.checked ? 'Done' : 'Not started';
         pill.className = 'status-pill ' + (e.target.checked?'done':'todo');
@@ -2594,6 +2604,16 @@ FROM system.replicas WHERE is_readonly;</pre>`,
     check.style.display = canCheck ? '' : 'none';
     document.getElementById('qaCustomerMessage').textContent = state.current.rawStatus && state.current.rawStatus.trim()
       ? 'Copy acknowledgment' : 'Request missing status';
+    // Which button is "primary" (highlighted) tracks what's actually the
+    // most useful next click, not a fixed default. When every recommendation
+    // is blocked pending evidence, the fastest path forward is pasting that
+    // evidence — not re-reading findings you've already seen.
+    const verdict = computeVerdict(system, state.current.findings, recs);
+    const qaFindings = document.getElementById('qaFindings');
+    const qaInputs = document.getElementById('qaInputs');
+    const primaryId = verdict.urgency === 'urgent-blocked' ? 'qaInputs' : 'qaFindings';
+    qaFindings.classList.toggle('primary', primaryId === 'qaFindings');
+    qaInputs.classList.toggle('primary', primaryId === 'qaInputs');
     repositionQuickActions();
   }
 
