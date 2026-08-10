@@ -1,0 +1,1449 @@
+const { suite, test, assert, assertEqual, assertIncludes, assertNotIncludes, summary } = require('./harness');
+const { loadDom, click, change, input, wait, FakeFile, patchFileReader } = require('./dom-helper');
+
+async function run() {
+  await suite('ES multi-index grouping (regression: no longer uses only the first UNASSIGNED shard)', async () => {
+    const { window, doc } = await loadDom();
+    doc.getElementById('logsInput').value = '[ERROR] CorruptIndexException: checksum failed for segment_3.cfs';
+    doc.getElementById('statusInput').value =
+      'index    shard prirep state      docs   store node\n' +
+      'orders   0     p     UNASSIGNED\n' +
+      'orders   0     r     STARTED    100    10mb   es-data-1\n' +
+      'products 0     p     UNASSIGNED\n' +
+      'products 0     r     STARTED    200    20mb   es-data-1';
+    click(doc.querySelector('#systemPicker button[data-val="elasticsearch"]'), window);
+    click(doc.getElementById('analyzeBtn'), window);
+    await wait(300);
+
+    await test('A finding flags that multiple indices are affected', async () => {
+      assertIncludes(doc.getElementById('findingsList').textContent, 'Multiple indices affected');
+      assertIncludes(doc.getElementById('findingsList').textContent, 'orders');
+      assertIncludes(doc.getElementById('findingsList').textContent, 'products');
+    });
+
+    await test('A targeted recommendation is generated for EACH affected index, not just the first', async () => {
+      click(doc.querySelector('.tab[data-tab="preporuke"]'), window);
+      const text = doc.getElementById('recsList').textContent;
+      assertIncludes(text, 'Promote the healthy replica to primary (orders)');
+      assertIncludes(text, 'Promote the healthy replica to primary (products)');
+    });
+  });
+
+  await suite('Analysis does not crash the UI on custom-rule errors (regression: silent failure)', async () => {
+    const { window, doc } = await loadDom();
+    // A rule with an empty/invalid-at-runtime pattern shouldn't hang the button
+    click(doc.querySelector('#sampleLinks button[data-s="elasticsearch"]'), window);
+    click(doc.getElementById('analyzeBtn'), window);
+    await wait(400);
+    await test('The Analyze button is re-enabled and reset after analysis (never stuck on "Analyzing...")', async () => {
+      const btn = doc.getElementById('analyzeBtn');
+      assertEqual(btn.disabled, false);
+      assertEqual(btn.textContent, 'Analyze');
+    });
+  });
+
+  await suite('No window globals for copy/unlock (regression: window.__copyCmd/__unlockCmd removed)', async () => {
+    const { window, doc } = await loadDom();
+    await test('window.__copyCmd no longer exists', async () => {
+      assertEqual(typeof window.__copyCmd, 'undefined');
+    });
+    await test('window.__unlockCmd no longer exists', async () => {
+      assertEqual(typeof window.__unlockCmd, 'undefined');
+    });
+    await test('Copy still works via delegated data-copy attribute (not inline onclick)', async () => {
+      click(doc.querySelector('#sampleLinks button[data-s="elasticsearch"]'), window);
+      click(doc.getElementById('analyzeBtn'), window);
+      await wait(300);
+      click(doc.querySelector('.tab[data-tab="preporuke"]'), window);
+      const copyBtn = doc.querySelector('#recsList [data-copy]');
+      assert(copyBtn, 'expected a button with data-copy attribute');
+      assert(!copyBtn.hasAttribute('onclick'), 'copy button should not use inline onclick');
+      click(copyBtn, window);
+      await wait(20);
+      assertEqual(copyBtn.textContent, 'copied ✓');
+    });
+  });
+
+  await suite('Kafka: corrupt segment command is a real, copy-paste-ready command (regression: used to be a comment)', async () => {
+    const { window, doc } = await loadDom();
+    // RF>1 case, with a realistic CorruptRecordException line that includes
+    // the segment's real file path — same regex diag-agent.sh/recommend-agent.sh
+    // use on the CLI side.
+    doc.getElementById('logsInput').value =
+      '[2026-08-06 10:00:00] ERROR [ReplicaManager broker=1] Error processing fetch\n' +
+      'org.apache.kafka.common.errors.CorruptRecordException: Found record size 0 smaller than minimum record overhead in /var/lib/kafka/data/orders-3/00000000000000012345.log';
+    doc.getElementById('statusInput').value =
+      'Topic: orders  PartitionCount: 6  ReplicationFactor: 3\n' +
+      '\tTopic: orders  Partition: 3  Leader: 1  Replicas: 1,2,3  Isr: 1,2,3';
+    click(doc.querySelector('#systemPicker button[data-val="kafka"]'), window);
+    click(doc.getElementById('analyzeBtn'), window);
+    await wait(300);
+    click(doc.querySelector('.tab[data-tab="preporuke"]'), window);
+
+    await test('The suggested command is a real "rm" with the exact parsed path, not a "#" comment', async () => {
+      const text = doc.getElementById('recsList').textContent;
+      assertIncludes(text, 'rm -v /var/lib/kafka/data/orders-3/00000000000000012345.log');
+      assertIncludes(text, '00000000000000012345.index');
+      assertIncludes(text, '00000000000000012345.timeindex');
+      assertNotIncludes(text, '# delete the .log/.index/.timeindex files for that segment');
+    });
+
+    await test('Falls back to a clearly-labeled placeholder (not a silent wrong guess) when no path can be parsed', async () => {
+      const { window: w2, doc: d2 } = await loadDom();
+      d2.getElementById('logsInput').value = '[ERROR] CorruptRecordException: corruption detected, no path in this message';
+      d2.getElementById('statusInput').value = 'Topic: orders  PartitionCount: 6  ReplicationFactor: 3';
+      click(d2.querySelector('#systemPicker button[data-val="kafka"]'), w2);
+      click(d2.getElementById('analyzeBtn'), w2);
+      await wait(300);
+      click(d2.querySelector('.tab[data-tab="preporuke"]'), w2);
+      const text = d2.getElementById('recsList').textContent;
+      assertIncludes(text, 'Could not parse the exact segment path');
+    });
+  });
+
+  await suite('Basic analysis — all 3 systems via the "Example" buttons', async () => {
+    const { window, doc } = await loadDom();
+    for (const sys of ['elasticsearch', 'clickhouse', 'kafka']) {
+      click(doc.querySelector(`#sampleLinks button[data-s="${sys}"]`), window);
+      click(doc.getElementById('analyzeBtn'), window);
+      await wait(300);
+      await test(`${sys}: system is correctly detected`, async () => {
+        assertIncludes(doc.querySelector('#findingsList h3').textContent, sys.toUpperCase());
+      });
+      await test(`${sys}: at least 1 immediate action exists`, async () => {
+        assert(doc.querySelectorAll('#recsList .rec').length > 0, 'expected at least 1 recommendation');
+      });
+    }
+  });
+
+  await suite('Instana self-hosted mode', async () => {
+    const { window, doc } = await loadDom();
+    click(doc.querySelector('#sampleLinks button[data-s="instana"]'), window);
+    click(doc.getElementById('analyzeBtn'), window);
+    await wait(400);
+
+    await test('Instana example is detected as an Instana incident', async () => {
+      assertIncludes(doc.querySelector('#findingsList h3').textContent, 'INSTANA');
+      assertIncludes(doc.getElementById('findingsList').textContent, 'Instana impact');
+      assertIncludes(doc.getElementById('findingsList').textContent, 'Affected Instana datastore: CLICKHOUSE');
+    });
+
+    await test('Instana recommendations include urgent bundle and after-action verification', async () => {
+      click(doc.querySelector('.tab[data-tab="preporuke"]'), window);
+      const text = doc.getElementById('recsList').textContent;
+      assertIncludes(text, 'Collect the Instana self-hosted urgent bundle');
+      assertIncludes(text, 're-run stanctl unit status');
+    });
+
+    await test('Instana mode requests stanctl status when status data is missing', async () => {
+      const { window: w2, doc: d2 } = await loadDom();
+      d2.getElementById('logsInput').value = 'instana-kafka kafka broker CrashLoopBackOff CorruptRecordException';
+      d2.getElementById('statusInput').value = '';
+      click(d2.querySelector('#systemPicker button[data-val="instana"]'), w2);
+      click(d2.getElementById('analyzeBtn'), w2);
+      await wait(400);
+      assertIncludes(d2.getElementById('infoRequestWrap').textContent, 'stanctl status');
+      assertIncludes(d2.getElementById('findingsList').textContent, 'Missing stanctl status/unit output');
+    });
+  });
+
+  await suite('Table parsing (shards / parts / topics)', async () => {
+    const { window, doc } = await loadDom();
+    click(doc.querySelector('#sampleLinks button[data-s="elasticsearch"]'), window);
+    click(doc.getElementById('analyzeBtn'), window);
+    await wait(300);
+    await test('ES: parsed shard table has rows', async () => {
+      assert(doc.querySelectorAll('table.parsed tbody tr').length > 0, 'expected at least 1 row');
+    });
+
+    const { window: w2, doc: d2 } = await loadDom();
+    click(d2.querySelector('#sampleLinks button[data-s="clickhouse"]'), w2);
+    click(d2.getElementById('analyzeBtn'), w2);
+    await wait(300);
+    await test('ClickHouse: parsed parts table has rows (box-drawing format)', async () => {
+      assert(d2.querySelectorAll('table.parsed tbody tr').length > 0, 'expected at least 1 row');
+    });
+
+    const { window: w3, doc: d3 } = await loadDom();
+    click(d3.querySelector('#sampleLinks button[data-s="kafka"]'), w3);
+    click(d3.getElementById('analyzeBtn'), w3);
+    await wait(300);
+    await test('Kafka: parsed partitions table has rows', async () => {
+      assert(d3.querySelectorAll('table.parsed tbody tr').length > 0, 'expected at least 1 row');
+    });
+  });
+
+  await suite('Preventive measures + checklist + progress bar', async () => {
+    const { window, doc } = await loadDom();
+    click(doc.querySelector('#sampleLinks button[data-s="elasticsearch"]'), window);
+    click(doc.getElementById('analyzeBtn'), window);
+    await wait(300);
+
+    await test('Preventive measures are shown separately from immediate actions', async () => {
+      assert(doc.querySelectorAll('#preventiveList .rec').length > 0, 'expected at least 1 preventive measure');
+    });
+
+    await test('Checking "Done" updates the status pill and progress bar', async () => {
+      const cb = doc.querySelector('#recsList .rec-done');
+      cb.checked = true;
+      change(cb, window);
+      assertEqual(doc.querySelector('#recsList .status-pill').textContent, 'Done');
+      assertIncludes(doc.querySelector('.progress-label').textContent, '1/');
+    });
+
+    await test('Assignee input is kept in state (visible after re-render)', async () => {
+      const inp = doc.querySelector('#recsList .rec-assignee');
+      inp.value = 'Alex';
+      input(inp, window);
+      assertEqual(inp.value, 'Alex');
+    });
+  });
+
+  await suite('Timeline (timestamp parsing)', async () => {
+    const { window, doc } = await loadDom();
+    click(doc.querySelector('#sampleLinks button[data-s="elasticsearch"]'), window);
+    click(doc.getElementById('analyzeBtn'), window);
+    await wait(300);
+    click(doc.querySelector('.tab[data-tab="linija"]'), window);
+    await test('At least 1 timestamped event is recognized', async () => {
+      assert(doc.querySelectorAll('.tl-item').length > 0, 'expected at least 1 timeline item');
+    });
+  });
+
+  await suite('Timeline filters out routine/info noise (regression: used to list every timestamped line)', async () => {
+    const { window, doc } = await loadDom();
+    const lines = [];
+    for(let i=0;i<50;i++) lines.push(`[2026-07-26T10:${String(i%60).padStart(2,'0')}:00][INFO][o.e.cluster] routine heartbeat ${i}`);
+    lines.push('[2026-07-26T10:05:14][ERROR][o.e.i.e.Engine] CorruptIndexException checksum failed');
+    lines.push('[2026-07-26T10:05:20][WARN][o.e.cluster] shard relocation delayed');
+    doc.getElementById('logsInput').value = lines.join('\n');
+    doc.getElementById('statusInput').value = 'myindex 0 p STARTED\nmyindex 0 r STARTED';
+    click(doc.querySelector('#systemPicker button[data-val="elasticsearch"]'), window);
+    click(doc.getElementById('analyzeBtn'), window);
+    await wait(300);
+    click(doc.querySelector('.tab[data-tab="linija"]'), window);
+    await test('Only the ERROR/WARN lines appear, not the 50 routine INFO lines', async () => {
+      const items = doc.querySelectorAll('.tl-item');
+      assertEqual(items.length, 2);
+    });
+    await test('The heading discloses how many routine lines were hidden, so nothing looks silently dropped', async () => {
+      assertIncludes(doc.getElementById('timelineResult').textContent, 'routine/info line');
+      assertIncludes(doc.getElementById('timelineResult').textContent, '50 routine');
+    });
+  });
+
+  await suite('Timeline falls back to showing everything if truly nothing looks like an error/warning', async () => {
+    const { window, doc } = await loadDom();
+    const lines = [];
+    for(let i=0;i<5;i++) lines.push(`[2026-07-26T10:${String(i).padStart(2,'0')}:00][INFO][o.e.cluster] routine heartbeat ${i}`);
+    doc.getElementById('logsInput').value = lines.join('\n');
+    click(doc.querySelector('#systemPicker button[data-val="elasticsearch"]'), window);
+    click(doc.getElementById('analyzeBtn'), window);
+    await wait(300);
+    click(doc.querySelector('.tab[data-tab="linija"]'), window);
+    await test('All 5 lines still show (better than an empty timeline)', async () => {
+      assertEqual(doc.querySelectorAll('.tl-item').length, 5);
+    });
+  });
+
+  await suite('JSON/ECS structured logs', async () => {
+    const { window, doc } = await loadDom();
+    click(doc.querySelector('#sampleLinks button[data-s="elasticsearch-json"]'), window);
+    click(doc.getElementById('analyzeBtn'), window);
+    await wait(300);
+    await test('Corruption is detected from a JSON/ECS log line', async () => {
+      assertIncludes(doc.getElementById('findingsList').textContent, 'Trace of physical segment corruption');
+    });
+  });
+
+  await suite('Snapshot comparison (diff)', async () => {
+    const { window, doc } = await loadDom();
+    click(doc.querySelector('.tab[data-tab="poredjenje"]'), window);
+    doc.getElementById('diffBefore').value = 'orders 0 p UNASSIGNED\norders 0 r STARTED';
+    doc.getElementById('diffAfter').value = 'orders 0 p STARTED\norders 0 r STARTED';
+    click(doc.getElementById('diffBtn'), window);
+    await wait(30);
+    await test('Primary shard transition UNASSIGNED -> STARTED is recognized as an improvement', async () => {
+      const rows = [...doc.querySelectorAll('table.diff tbody tr')];
+      const primaryRow = rows.find(r => r.textContent.includes('primary'));
+      assert(primaryRow, 'row for the primary shard not found');
+      assertIncludes(primaryRow.querySelector('.diff-pill').textContent, 'Improved');
+    });
+  });
+
+  await suite('Custom rules', async () => {
+    const { window, doc } = await loadDom();
+    click(doc.querySelector('.tab[data-tab="pravila"]'), window);
+    doc.getElementById('ruleRegex').value = 'MyInternalError';
+    doc.getElementById('ruleTitle').value = 'Internal error XYZ';
+    doc.getElementById('ruleNote').value = 'Custom case';
+    click(doc.getElementById('addRuleBtn'), window);
+    await wait(20);
+
+    await test('Rule is added to the list', async () => {
+      assertEqual(doc.getElementById('countPravila').textContent, '1');
+    });
+
+    doc.getElementById('logsInput').value = 'a message with MyInternalError in it';
+    doc.getElementById('statusInput').value = 'myindex 0 p STARTED';
+    click(doc.querySelector('#systemPicker button[data-val="elasticsearch"]'), window);
+    click(doc.getElementById('analyzeBtn'), window);
+    await wait(400);
+
+    await test('Custom rule is applied during analysis and appears in findings', async () => {
+      assertIncludes(doc.getElementById('findingsList').textContent, 'Internal error XYZ');
+    });
+
+    await test('Warning about a potentially dangerous regex (nested quantifiers) is shown but does not block', async () => {
+      const { window: w2, doc: d2 } = await loadDom();
+      click(d2.querySelector('.tab[data-tab="pravila"]'), w2);
+      d2.getElementById('ruleRegex').value = '(a+)+b';
+      d2.getElementById('ruleTitle').value = 'Dangerous rule';
+      d2.getElementById('ruleNote').value = 'x';
+      click(d2.getElementById('addRuleBtn'), w2);
+      await wait(30);
+      const toasts = [...d2.querySelectorAll('.toast')].map(t => t.textContent).join(' ');
+      assertIncludes(toasts, 'slow regex');
+      assertEqual(d2.getElementById('countPravila').textContent, '1');
+    });
+  });
+
+  await suite('Redacting sensitive data before export', async () => {
+    const { window, doc } = await loadDom();
+    doc.getElementById('logsInput').value = 'ERROR from 10.0.0.42 contact admin@example.com token: abc123XYZsecret ERROR again Exception at Foo.bar';
+    doc.getElementById('statusInput').value = 'myindex 0 p STARTED';
+    click(doc.querySelector('#systemPicker button[data-val="elasticsearch"]'), window);
+    click(doc.getElementById('analyzeBtn'), window);
+    await wait(300);
+
+    let captured = null;
+    const OrigBlob = window.Blob;
+    window.Blob = function (parts, opts) { captured = parts[0]; return new OrigBlob(parts, opts); };
+
+    await test('With redaction on (default), IP and email are masked in the JSON export', async () => {
+      assert(doc.getElementById('redactToggle').checked, 'redactToggle should be checked by default');
+      click(doc.getElementById('exportJson'), window);
+      const data = JSON.parse(captured);
+      assertNotIncludes(data.rawLogs, '10.0.0.42');
+      assertIncludes(data.rawLogs, '[IP-REDACTED]');
+      assertNotIncludes(data.rawLogs, 'admin@example.com');
+    });
+
+    await test('With redaction off, raw data stays in the export', async () => {
+      doc.getElementById('redactToggle').checked = false;
+      click(doc.getElementById('exportJson'), window);
+      const data = JSON.parse(captured);
+      assertIncludes(data.rawLogs, '10.0.0.42');
+    });
+  });
+
+  await suite('File upload — auto-classification', async () => {
+    const { window, doc } = await loadDom();
+    patchFileReader(window);
+    const files = [
+      new FakeFile('03-logs-previous.txt', '[ERROR] CorruptIndexException: checksum failed'),
+      new FakeFile('11-es-shards.txt', 'myindex 0 p UNASSIGNED\nmyindex 0 r STARTED'),
+      new FakeFile('random-notes.txt', 'ERROR Exception at com.foo.Bar(Bar.java:10) ERROR Exception at Baz')
+    ];
+    const fileInput = doc.getElementById('fileInput');
+    Object.defineProperty(fileInput, 'files', { value: files, writable: true });
+    change(fileInput, window);
+    await wait(60);
+
+    await test('A file with "logs" in its name goes to logsInput', async () => {
+      assertIncludes(doc.getElementById('logsInput').value, '03-logs-previous.txt');
+    });
+    await test('A file with "shards" in its name goes to statusInput', async () => {
+      assertIncludes(doc.getElementById('statusInput').value, '11-es-shards.txt');
+    });
+    await test('A generic filename is classified by content sniffing (2+ ERROR/Exception -> logs)', async () => {
+      assertIncludes(doc.getElementById('logsInput').value, 'random-notes.txt');
+    });
+  });
+
+  await suite('History — saving and reloading an analysis', async () => {
+    const { window, doc } = await loadDom();
+    for (const sys of ['elasticsearch', 'clickhouse']) {
+      click(doc.querySelector(`#sampleLinks button[data-s="${sys}"]`), window);
+      click(doc.getElementById('analyzeBtn'), window);
+      await wait(300);
+    }
+    await test('Number of analyses in history is 2', async () => {
+      assertEqual(doc.getElementById('historyCount').textContent, '2');
+    });
+    click(doc.getElementById('navHistory'), window);
+    const items = doc.querySelectorAll('.history-item');
+    await test('2 history items are displayed', async () => {
+      assertEqual(items.length, 2);
+    });
+    click(items[0], window);
+    await wait(20);
+    await test('Clicking a history item loads that analysis back into Findings', async () => {
+      assert(doc.querySelector('#findingsList h3'), 'findings h3 should exist');
+    });
+  });
+
+  await suite('Export contents (Markdown/HTML/JSON/ticket text)', async () => {
+    const { window, doc } = await loadDom();
+    click(doc.querySelector('#sampleLinks button[data-s="kafka"]'), window);
+    click(doc.getElementById('analyzeBtn'), window);
+    await wait(300);
+
+    let captured = null;
+    const OrigBlob = window.Blob;
+    window.Blob = function (parts, opts) { captured = parts[0]; return new OrigBlob(parts, opts); };
+
+    await test('Markdown report contains findings and recommendations', async () => {
+      click(doc.getElementById('exportMd'), window);
+      assertIncludes(captured, '# Incident report');
+      assertIncludes(captured, '## Findings');
+      assertIncludes(captured, '## Immediate actions');
+    });
+
+    await test('Regression: each export click gets its own filename (a second export must not silently overwrite the first)', async () => {
+      const seenNames = [];
+      const origClick = window.HTMLAnchorElement.prototype.click;
+      window.HTMLAnchorElement.prototype.click = function () { seenNames.push(this.download); return origClick.call(this); };
+      click(doc.getElementById('exportMd'), window);
+      click(doc.getElementById('exportMd'), window); // rapid back-to-back, same second
+      window.HTMLAnchorElement.prototype.click = origClick;
+      assertEqual(seenNames.length, 2);
+      assert(seenNames[0] !== seenNames[1], `two exports produced the same filename: ${seenNames[0]}`);
+      assert(/_\d{6}-\d{3}\.md$/.test(seenNames[0]), `filename should end in an HHMMSS-mmm export timestamp, got: ${seenNames[0]}`);
+    });
+
+    await test('Ticket text is generated and contains system/findings', async () => {
+      click(doc.getElementById('ticketBtn'), window);
+      await wait(20);
+      const ta = doc.getElementById('ticketTextArea');
+      assert(ta, 'modal textarea should exist');
+      assertIncludes(ta.value, 'KAFKA');
+      assertIncludes(ta.value, 'FINDINGS:');
+    });
+  });
+
+  await suite('Companion server fetch (mock fetch, no real server)', async () => {
+    const mockFetch = async (url, opts) => {
+      if (url.includes('/logs')) return { ok: true, json: async () => ({ text: 'MOCK LOGS CorruptIndexException checksum' }) };
+      if (url.includes('/status')) return { ok: true, json: async () => ({ text: 'myindex 0 p UNASSIGNED\nmyindex 0 r STARTED' }) };
+    };
+    const { window, doc } = await loadDom({ mockFetch });
+    doc.getElementById('cNamespace').value = 'production';
+    doc.getElementById('cPod').value = 'es-data-0';
+    doc.getElementById('cToken').value = 'abc123';
+    click(doc.querySelector('#systemPicker button[data-val="elasticsearch"]'), window);
+    click(doc.getElementById('companionFetchBtn'), window);
+    await wait(50);
+
+    await test('Fields are auto-filled from the mock companion response', async () => {
+      assertIncludes(doc.getElementById('logsInput').value, 'MOCK LOGS');
+      assertIncludes(doc.getElementById('statusInput').value, 'UNASSIGNED');
+    });
+  });
+
+  await suite("Log quote (evidence) — so you don't have to search the text manually", async () => {
+    const { window, doc } = await loadDom();
+    click(doc.querySelector('#sampleLinks button[data-s="elasticsearch"]'), window);
+    click(doc.getElementById('analyzeBtn'), window);
+    await wait(300);
+    await test('Findings contain the exact line that proves the corruption', async () => {
+      assertIncludes(doc.getElementById('findingsList').innerHTML, 'evidence-quote');
+      assertIncludes(doc.getElementById('findingsList').textContent, 'CorruptIndexException');
+    });
+  });
+
+  await suite('Customer message per recommendation', async () => {
+    const { window, doc } = await loadDom();
+    click(doc.querySelector('#sampleLinks button[data-s="kafka"]'), window);
+    click(doc.getElementById('analyzeBtn'), window);
+    await wait(300);
+    await test('Every recommendation has a "Message for the customer" block ready to copy', async () => {
+      assertIncludes(doc.getElementById('recsList').textContent, 'Message for the customer');
+      assertIncludes(doc.getElementById('recsList').textContent, 'Hi,');
+    });
+    await test('Customer message includes the exact command to check the prerequisite first', async () => {
+      assertIncludes(doc.getElementById('recsList').textContent, 'First, run this command to check the prerequisite');
+      assertIncludes(doc.getElementById('recsList').textContent, 'kafka-topics.sh --bootstrap-server localhost:9092 --describe --topic orders');
+    });
+    await test('Customer message explains jargon terms in plain language (zero-experience friendly)', async () => {
+      const text = doc.getElementById('recsList').textContent;
+      assertIncludes(text, 'Some terms used above, in plain language');
+      assertIncludes(text, 'Replication factor (RF)');
+      assertIncludes(text, 'only one copy');
+    });
+    await test('Recommendation card shows a visible link to official documentation', async () => {
+      const link = doc.querySelector('#recsList .doc-link');
+      assert(link, 'expected a .doc-link element on the recommendation card');
+      assertIncludes(link.getAttribute('href'), 'kafka.apache.org');
+    });
+    await test('Customer message includes a "want more detail" documentation link', async () => {
+      assertIncludes(doc.getElementById('recsList').textContent, 'Official documentation:');
+    });
+  });
+
+  await suite('Request for more data when status is missing (realistic case — logs only)', async () => {
+    const { window, doc } = await loadDom();
+    doc.getElementById('logsInput').value = '[ERROR] CorruptIndexException: checksum failed for segment_3.cfs';
+    doc.getElementById('statusInput').value = ''; // customer did not send status - realistic case
+    click(doc.querySelector('#systemPicker button[data-val="elasticsearch"]'), window);
+    click(doc.getElementById('analyzeBtn'), window);
+    await wait(300);
+
+    await test('A warning about missing data is shown', async () => {
+      assertIncludes(doc.getElementById('infoRequestWrap').textContent, 'Not enough data');
+    });
+    await test('A ready-made message to request status output from the customer is offered', async () => {
+      assertIncludes(doc.getElementById('infoRequestWrap').textContent, '_cat/shards');
+    });
+
+    const { window: w2, doc: d2 } = await loadDom();
+    click(d2.querySelector('#sampleLinks button[data-s="elasticsearch"]'), w2); // has status too
+    click(d2.getElementById('analyzeBtn'), w2);
+    await wait(300);
+    await test('When status data IS present, the warning is NOT shown', async () => {
+      assertEqual(d2.getElementById('infoRequestWrap').style.display, 'none');
+    });
+  });
+
+  await suite('Simplified view — advanced tabs hidden by default', async () => {
+    const { window, doc } = await loadDom();
+    await test('Diagram/Comparison/Timeline/Rules/History tabs are hidden on load', async () => {
+      assertEqual(doc.querySelector('.tab[data-tab="dijagram"]').style.display, 'none');
+      assertEqual(doc.querySelector('.tab[data-tab="poredjenje"]').style.display, 'none');
+      assertEqual(doc.querySelector('.tab[data-tab="pravila"]').style.display, 'none');
+    });
+    await test('Findings and Recommendations tabs are visible on load (no advanced-tab class)', async () => {
+      assert(!doc.querySelector('.tab[data-tab="nalaz"]').classList.contains('advanced-tab'));
+      assert(!doc.querySelector('.tab[data-tab="preporuke"]').classList.contains('advanced-tab'));
+    });
+    await test('Clicking "Advanced" reveals the advanced tabs', async () => {
+      click(doc.getElementById('toggleAdvancedBtn'), window);
+      assertEqual(doc.querySelector('.tab[data-tab="dijagram"]').style.display, '');
+    });
+    await test('Clicking "Advanced" again hides them', async () => {
+      click(doc.getElementById('toggleAdvancedBtn'), window);
+      assertEqual(doc.querySelector('.tab[data-tab="dijagram"]').style.display, 'none');
+    });
+  });
+
+  await suite('Light/dark theme toggle', async () => {
+    const { window, doc } = await loadDom();
+    await test('Default theme is light', async () => {
+      assertEqual(doc.documentElement.getAttribute('data-theme'), 'light');
+      assertIncludes(doc.getElementById('themeToggle').textContent, 'Light');
+    });
+    await test('Click switches theme to dark', async () => {
+      click(doc.getElementById('themeToggle'), window);
+      assertEqual(doc.documentElement.getAttribute('data-theme'), 'dark');
+      assertIncludes(doc.getElementById('themeToggle').textContent, 'Dark');
+    });
+    await test('Second click switches back to light', async () => {
+      click(doc.getElementById('themeToggle'), window);
+      assertEqual(doc.documentElement.getAttribute('data-theme'), 'light');
+    });
+    await test('Theme change does not break the rest of the app (analysis still works)', async () => {
+      click(doc.getElementById('themeToggle'), window); // -> dark
+      click(doc.querySelector('#sampleLinks button[data-s="elasticsearch"]'), window);
+      click(doc.getElementById('analyzeBtn'), window);
+      await wait(300);
+      assertIncludes(doc.querySelector('#findingsList h3').textContent, 'ELASTICSEARCH');
+    });
+    await test('Input fields (textarea/input) follow the theme, not hardcoded dark', async () => {
+      const styleText = doc.querySelector('style').textContent;
+      assertIncludes(styleText, '--input-bg', 'CSS should use the --input-bg variable for field backgrounds');
+      assert(!/background:#0d1116/.test(styleText), 'textarea/input background must not be hardcoded (must follow the theme)');
+    });
+    await test('Header and info/new badges follow the theme (no hardcoded dark colors)', async () => {
+      const styleText = doc.querySelector('style').textContent;
+      assert(!/linear-gradient\(180deg,\s*#141a22/.test(styleText), 'header gradient must not be hardcoded');
+      assert(!/background:#1c3350/.test(styleText), 'badge.info/diff-pill.new must not be hardcoded');
+    });
+  });
+
+  await suite('Custom hover tooltips (regression: native title="" replaced with styled data-tooltip)', async () => {
+    const { window, doc } = await loadDom();
+    await test('Static help icons use data-tooltip, not native title', async () => {
+      const helpIcon = doc.querySelector('.help-icon');
+      assert(helpIcon.hasAttribute('data-tooltip'), 'help icon should have data-tooltip');
+      assert(!helpIcon.hasAttribute('title'), 'help icon should not also carry a native title (avoids double tooltip)');
+    });
+    await test('Regression: tooltips are positioned by JS (viewport-clamped), not a fixed CSS direction', async () => {
+      // Earlier this used a static CSS position ("always open down-left"),
+      // which fixed clipping for icons near the sidebar's right edge but
+      // broke it for icons near the LEFT edge (e.g. "Import files") — a
+      // fixed direction can never be correct for triggers on both sides of
+      // a narrow container. A single JS-measured, viewport-clamped tooltip
+      // (see initTooltips/computeTooltipPosition) is the actual fix; this
+      // just confirms that shared element exists and old per-element
+      // position attributes are gone. The clamping math itself can't be
+      // meaningfully unit-tested here — jsdom's getBoundingClientRect()
+      // always returns zeros (no real layout engine) — so correctness for
+      // this specific bug was confirmed with real screenshots instead.
+      assert(doc.querySelector('.js-tooltip'), 'expected one shared .js-tooltip element appended to the page');
+      assertEqual(doc.querySelectorAll('[data-tooltip-pos]').length, 0, 'no element should still carry the old fixed-direction attribute');
+    });
+    await test('Hovering a tooltip trigger shows the shared tooltip with the right text; moving away hides it', async () => {
+      const icon = doc.querySelector('.help-icon[data-tooltip]');
+      const overEvt = new window.Event('mouseover', { bubbles: true });
+      icon.dispatchEvent(overEvt);
+      const tip = doc.querySelector('.js-tooltip');
+      assertEqual(tip.style.display, 'block');
+      assertEqual(tip.textContent, icon.dataset.tooltip);
+      const outEvt = new window.Event('mouseout', { bubbles: true });
+      Object.defineProperty(outEvt, 'relatedTarget', { value: doc.body });
+      icon.dispatchEvent(outEvt);
+      assertEqual(tip.style.display, 'none');
+    });
+    await test('Regression: tap (touchstart) also shows the tooltip — hover-only was inaccessible on touch devices', async () => {
+      const icon = doc.querySelector('.help-icon[data-tooltip]');
+      const tip = doc.querySelector('.js-tooltip');
+      const touchEvt = new window.Event('touchstart', { bubbles: true });
+      icon.dispatchEvent(touchEvt);
+      assertEqual(tip.style.display, 'block');
+      assertEqual(tip.textContent, icon.dataset.tooltip);
+    });
+    await test('Tapping elsewhere (not a tooltip trigger) dismisses an open tooltip', async () => {
+      const icon = doc.querySelector('.help-icon[data-tooltip]');
+      const tip = doc.querySelector('.js-tooltip');
+      icon.dispatchEvent(new window.Event('touchstart', { bubbles: true }));
+      assertEqual(tip.style.display, 'block');
+      doc.body.dispatchEvent(new window.Event('touchstart', { bubbles: true }));
+      assertEqual(tip.style.display, 'none');
+    });
+    await test('Severity, confidence, and risk badges all carry explanatory tooltips', async () => {
+      click(doc.querySelector('#sampleLinks button[data-s="elasticsearch"]'), window);
+      click(doc.getElementById('analyzeBtn'), window);
+      await wait(300);
+      const sevBadge = doc.querySelector('#findingsList .badge');
+      assert(sevBadge.hasAttribute('data-tooltip') && sevBadge.dataset.tooltip.length > 0, 'severity badge needs a tooltip');
+      const confBadge = doc.querySelector('#findingsList .badge.conf-high, #findingsList .badge.conf-medium, #findingsList .badge.conf-low');
+      assert(confBadge && confBadge.dataset.tooltip.length > 0, 'confidence badge needs a tooltip');
+      click(doc.querySelector('.tab[data-tab="preporuke"]'), window);
+      const stamp = doc.querySelector('#recsList .stamp-wrap');
+      assert(stamp.hasAttribute('data-tooltip') && stamp.dataset.tooltip.length > 0, 'risk stamp needs a tooltip');
+    });
+    await test('Stage stepper pills explain what each stage means', async () => {
+      click(doc.querySelector('#sampleLinks button[data-s="elasticsearch"]'), window);
+      click(doc.getElementById('analyzeBtn'), window);
+      await wait(300);
+      const pill = doc.querySelector('.stage-pill');
+      assert(pill.hasAttribute('data-tooltip') && pill.dataset.tooltip.length > 10, 'stage pill needs a real explanation, not just a label');
+    });
+  });
+
+  await suite('Incident verdict banner (urgency assessment)', async () => {
+    const { window, doc } = await loadDom();
+    // ES sample: corrupt + healthy replica -> critical finding exists, safe/moderate fix exists -> urgent-safe
+    click(doc.querySelector('#sampleLinks button[data-s="elasticsearch"]'), window);
+    click(doc.getElementById('analyzeBtn'), window);
+    await wait(300);
+    await test('Verdict banner is shown with an urgency label', async () => {
+      assertIncludes(doc.getElementById('verdictBannerWrap').textContent, 'Act now');
+    });
+    await test('"Send acknowledgment now" button opens a modal with the ack message', async () => {
+      click(doc.getElementById('ackNowBtn'), window);
+      await wait(20);
+      assertIncludes(doc.getElementById('ticketTextArea').value, 'actively investigating');
+    });
+  });
+
+  await suite('Escalation message — shown when there is no safe fix', async () => {
+    const { window, doc } = await loadDom();
+    // Kafka RF=1 + corrupt -> destructive-only fix -> should escalate
+    click(doc.querySelector('#sampleLinks button[data-s="kafka"]'), window);
+    click(doc.getElementById('analyzeBtn'), window);
+    await wait(300);
+    await test('Escalation button is present when every fix is destructive/no safe path', async () => {
+      assert(doc.getElementById('escalateBtn'), 'expected an Escalation message button');
+    });
+    await test('Escalation message contains key findings and system name', async () => {
+      click(doc.getElementById('escalateBtn'), window);
+      await wait(20);
+      const val = doc.getElementById('ticketTextArea').value;
+      assertIncludes(val, 'ESCALATION');
+      assertIncludes(val, 'Kafka');
+    });
+  });
+
+  await suite('Verdict banner — stable case has no escalation button', async () => {
+    const { window, doc } = await loadDom();
+    doc.getElementById('logsInput').value = 'plain log line with no known error pattern in it';
+    doc.getElementById('statusInput').value = 'myindex 0 p STARTED\nmyindex 0 r STARTED';
+    click(doc.querySelector('#systemPicker button[data-val="elasticsearch"]'), window);
+    click(doc.getElementById('analyzeBtn'), window);
+    await wait(300);
+    await test('No critical findings -> "Stable" verdict, no escalate button', async () => {
+      assertIncludes(doc.getElementById('verdictBannerWrap').textContent, 'Stable');
+      assert(!doc.getElementById('escalateBtn'), 'escalate button should not exist when stable');
+    });
+  });
+
+  await suite('Stop banner ("do this first") — shown by default, dismissible', async () => {
+    const { window, doc } = await loadDom();
+    click(doc.querySelector('#sampleLinks button[data-s="elasticsearch"]'), window);
+    click(doc.getElementById('analyzeBtn'), window);
+    await wait(300);
+    await test('Stop banner is visible after analysis with the safety checklist', async () => {
+      assertIncludes(doc.getElementById('stopBannerWrap').textContent, "Don't restart");
+    });
+    await test('Dismissing the stop banner hides it', async () => {
+      click(doc.getElementById('stopDismissBtn'), window);
+      await wait(20);
+      assertEqual(doc.getElementById('stopBannerWrap').style.display, 'none');
+    });
+  });
+
+  await suite('First contact message — available before any analysis', async () => {
+    const { window, doc } = await loadDom();
+    await test('First contact button works with no incident loaded yet', async () => {
+      click(doc.getElementById('firstContactBtn'), window);
+      await wait(20);
+      const val = doc.getElementById('ticketTextArea').value;
+      assertIncludes(val, 'GET _cluster/health');
+      assertIncludes(val, 'SELECT database, table, name, is_readonly');
+      assertIncludes(val, 'kafka-topics.sh --bootstrap-server localhost:9092 --describe');
+    });
+  });
+
+  await suite('Quick "did it work?" check', async () => {
+    const { window, doc } = await loadDom();
+    click(doc.querySelector('#sampleLinks button[data-s="elasticsearch"]'), window);
+    click(doc.getElementById('analyzeBtn'), window);
+    await wait(300);
+    await test('"Check if this worked" button is available right on the verdict banner', async () => {
+      assert(doc.getElementById('quickCheckBtn'), 'expected a quickCheckBtn on the verdict banner');
+    });
+    await test('Pasting an improved status shows an "improved" verdict without re-pasting the before state', async () => {
+      click(doc.getElementById('quickCheckBtn'), window);
+      await wait(20);
+      doc.getElementById('quickCheckInput').value = 'orders 2 p STARTED\norders 2 r STARTED';
+      click(doc.getElementById('quickCheckRun'), window);
+      await wait(20);
+      assertIncludes(doc.getElementById('quickCheckResult').textContent, 'Looks improved');
+    });
+    await test('Running the quick check advances the incident stage to "Verifying"', async () => {
+      assertIncludes(doc.getElementById('stageStepperWrap').innerHTML, 'active');
+      const activePill = doc.querySelector('.stage-pill.active');
+      assertIncludes(activePill.textContent, 'Verifying');
+    });
+  });
+
+  await suite('Incident stage stepper', async () => {
+    const { window, doc } = await loadDom();
+    click(doc.querySelector('#sampleLinks button[data-s="elasticsearch"]'), window);
+    click(doc.getElementById('analyzeBtn'), window);
+    await wait(300);
+    await test('Starts at "Diagnosing" right after analysis', async () => {
+      const activePill = doc.querySelector('.stage-pill.active');
+      assertIncludes(activePill.textContent, 'Diagnosing');
+    });
+    await test('Copying a customer message auto-advances to "Waiting on customer"', async () => {
+      const msgBtn = doc.querySelector('#recsList pre[id*="-msg-"] .copy-btn');
+      click(msgBtn, window);
+      await wait(20);
+      const activePill = doc.querySelector('.stage-pill.active');
+      assertIncludes(activePill.textContent, 'Waiting on customer');
+    });
+    await test('Stage pills are manually clickable to override', async () => {
+      const resolvedPill = [...doc.querySelectorAll('.stage-pill')].find(b => b.textContent.includes('Resolved'));
+      click(resolvedPill, window);
+      await wait(20);
+      const activePill = doc.querySelector('.stage-pill.active');
+      assertIncludes(activePill.textContent, 'Resolved');
+    });
+  });
+
+  await suite('Confidence badges on findings', async () => {
+    const { window, doc } = await loadDom();
+    click(doc.querySelector('#sampleLinks button[data-s="elasticsearch"]'), window);
+    click(doc.getElementById('analyzeBtn'), window);
+    await wait(300);
+    await test('Findings show a confidence badge (structured cluster status reads as HIGH)', async () => {
+      const html = doc.getElementById('findingsList').innerHTML;
+      assertIncludes(html, 'conf-high');
+      assertIncludes(html, 'HIGH CONFIDENCE');
+    });
+    await test('A fuzzy log-pattern match (corruption trace) is labeled MEDIUM, not HIGH', async () => {
+      const rows = [...doc.querySelectorAll('.finding-row')];
+      const corruptionRow = rows.find(r => r.textContent.includes('Trace of physical segment corruption'));
+      assert(corruptionRow, 'expected to find the corruption finding row');
+      assertIncludes(corruptionRow.innerHTML, 'MEDIUM CONFIDENCE');
+    });
+  });
+
+  await suite('Type-to-confirm gate on destructive (PERMANENT LOSS) commands', async () => {
+    const { window, doc } = await loadDom();
+    // ES corrupt + NO replica -> triggers the destructive "remove corrupted data" rec
+    doc.getElementById('logsInput').value = '[ERROR] CorruptIndexException: checksum failed for segment_3.cfs';
+    doc.getElementById('statusInput').value = 'myindex 0 p UNASSIGNED';
+    click(doc.querySelector('#systemPicker button[data-val="elasticsearch"]'), window);
+    click(doc.getElementById('analyzeBtn'), window);
+    await wait(300);
+    click(doc.querySelector('.tab[data-tab="preporuke"]'), window);
+
+    await test('Destructive command is blurred/locked behind a CONFIRM gate by default', async () => {
+      const locked = doc.querySelector('#recsList pre.cmd.cmd-locked');
+      assert(locked, 'expected a locked destructive command');
+      assert(locked.querySelector('.copy-btn').disabled, 'copy button should be disabled while locked');
+    });
+    await test('Typing the wrong word does not unlock it', async () => {
+      const gateInput = doc.querySelector('.cmd-gate-input');
+      const cmdId = gateInput.id.replace('gate-', '');
+      gateInput.value = 'yes please';
+      click(doc.querySelector('.cmd-gate-btn'), window);
+      assert(doc.getElementById(cmdId).classList.contains('cmd-locked'), 'should still be locked after a wrong confirmation word');
+    });
+    await test('Typing CONFIRM unlocks the command and enables copy', async () => {
+      const gateInput = doc.querySelector('.cmd-gate-input');
+      const cmdId = gateInput.id.replace('gate-', '');
+      gateInput.value = 'confirm';
+      click(doc.querySelector('.cmd-gate-btn'), window);
+      const pre = doc.getElementById(cmdId);
+      assert(!pre.classList.contains('cmd-locked'), 'should be unlocked after typing CONFIRM');
+      assert(!pre.querySelector('.copy-btn').disabled, 'copy button should be enabled after unlocking');
+    });
+    await test('Safe/moderate recommendations are never gated', async () => {
+      const anyLockedLeft = doc.querySelectorAll('#recsList .stamp.safe').length > 0
+        ? doc.querySelector('#recsList .rec:has(.stamp.safe) pre.cmd.cmd-locked')
+        : null;
+      assert(!anyLockedLeft, 'a SAFE-risk recommendation should never be gated');
+    });
+  });
+
+  await suite('Status output commands are real, copyable text (regression: they used to be placeholder="" only)', async () => {
+    const { window, doc } = await loadDom();
+    await test('With no system selected (auto), all 4 reference commands are shown, each with its own copy button', async () => {
+      const hint = doc.getElementById('statusCmdHint');
+      assertIncludes(hint.textContent, 'stanctl status');
+      assertIncludes(hint.textContent, 'GET _cluster/health');
+      assertIncludes(hint.textContent, 'SELECT database, table, name, is_readonly');
+      assertIncludes(hint.textContent, 'kafka-topics.sh --bootstrap-server localhost:9092 --describe');
+      assertEqual(hint.querySelectorAll('.copy-btn').length, 4);
+    });
+    await test('The textarea placeholder itself no longer duplicates the commands (placeholder text cannot be selected/copied)', async () => {
+      const placeholder = doc.getElementById('statusInput').getAttribute('placeholder');
+      assertNotIncludes(placeholder, 'GET _cluster/health');
+      assertNotIncludes(placeholder, 'kafka-topics.sh');
+    });
+    await test('Selecting a specific system narrows the hint to just that system\'s command', async () => {
+      click(doc.querySelector('#systemPicker button[data-val="kafka"]'), window);
+      const hint = doc.getElementById('statusCmdHint');
+      assertIncludes(hint.textContent, 'kafka-topics.sh --bootstrap-server localhost:9092 --describe');
+      assertNotIncludes(hint.textContent, 'GET _cluster/health');
+      assertEqual(hint.querySelectorAll('.copy-btn').length, 1);
+    });
+    await test('Clicking copy actually copies the exact command text (via the same data-copy delegation as everywhere else)', async () => {
+      const copyBtn = doc.querySelector('#statusCmdHint .copy-btn');
+      assert(copyBtn.hasAttribute('data-copy'), 'should use the shared delegated copy mechanism, not a one-off handler');
+      click(copyBtn, window);
+      await wait(20);
+      assertEqual(copyBtn.textContent, 'copied ✓');
+    });
+  });
+
+  await suite('Companion server — validation of missing fields', async () => {
+    const { window, doc } = await loadDom();
+    click(doc.getElementById('companionFetchBtn'), window);
+    await wait(20);
+    await test('A message about missing fields is shown, without attempting a fetch', async () => {
+      assertIncludes([...doc.querySelectorAll('.toast')].map(t => t.textContent).join(' '), 'Fill in namespace');
+    });
+  });
+
+  await suite('Kubernetes layer — "the pod stopped" is diagnosed BEFORE datastore internals', async () => {
+    const { window, doc } = await loadDom();
+    // Realistic paste: kubectl describe output in the logs field, alongside an ES log line.
+    doc.getElementById('logsInput').value =
+      'Last State:     Terminated\n' +
+      '  Reason:       OOMKilled\n' +
+      '  Exit Code:    137\n' +
+      'Warning  BackOff  2m  kubelet  Back-off restarting failed container\n' +
+      'Status: CrashLoopBackOff\n' +
+      '[ERROR] CorruptIndexException: checksum failed for segment_1.cfs';
+    doc.getElementById('statusInput').value = '';
+    click(doc.querySelector('#systemPicker button[data-val="elasticsearch"]'), window);
+    click(doc.getElementById('analyzeBtn'), window);
+    await wait(300);
+
+    await test('OOMKilled and CrashLoopBackOff both surface as findings', async () => {
+      const t = doc.getElementById('findingsList').textContent;
+      assertIncludes(t, 'OOMKilled');
+      assertIncludes(t, 'CrashLoopBackOff');
+    });
+    await test('Kubernetes-level findings appear BEFORE the datastore findings', async () => {
+      const t = doc.getElementById('findingsList').textContent;
+      assert(t.indexOf('CrashLoopBackOff') < t.indexOf('Cluster status'),
+        'pod-level finding should be listed before the ES cluster-status finding');
+    });
+    await test('The memory-limit recommendation exists, with a consequence explaining the pod restart', async () => {
+      click(doc.querySelector('.tab[data-tab="preporuke"]'), window);
+      const t = doc.getElementById('recsList').textContent;
+      assertIncludes(t, 'Raise the container memory limit');
+      assertIncludes(t, 'RECREATED');
+    });
+  });
+
+  await suite('Kubernetes layer — Evicted pod', async () => {
+    const { window, doc } = await loadDom();
+    doc.getElementById('logsInput').value =
+      'Status: Failed\nReason: Evicted\nMessage: The node was low on resource: ephemeral-storage.\n' +
+      'clickhouse-server: some unrelated line';
+    click(doc.getElementById('analyzeBtn'), window);
+    await wait(300);
+    await test('The Evicted finding says PV data is NOT deleted by an eviction', async () => {
+      const t = doc.getElementById('findingsList').textContent;
+      assertIncludes(t, 'Evicted');
+      assertIncludes(t, 'NOT deleted');
+    });
+    await test('The clear-Evicted-pod recommendation warns never to delete the PVC', async () => {
+      click(doc.querySelector('.tab[data-tab="preporuke"]'), window);
+      assertIncludes(doc.getElementById('recsList').textContent, 'NEVER delete the PVC');
+    });
+  });
+
+  await suite('Kubernetes layer — volume mount failure with unknown datastore type', async () => {
+    const { window, doc } = await loadDom();
+    // Nothing here identifies ES/CH/Kafka — only k8s signals. The old behavior
+    // was a dead-end "System type not recognized" with zero recommendations.
+    doc.getElementById('logsInput').value =
+      'Warning  FailedMount  90s  kubelet  MountVolume.SetUp failed for volume "data" : timed out waiting for the condition\n' +
+      'Warning  FailedAttachVolume  3m  attachdetach-controller  Multi-Attach error for volume "pvc-1234"';
+    click(doc.getElementById('analyzeBtn'), window);
+    await wait(300);
+    await test('The volume finding and a read-only PVC/PV check recommendation are produced even without a recognized datastore', async () => {
+      assertIncludes(doc.getElementById('findingsList').textContent, 'Volume/PVC cannot be mounted');
+      click(doc.querySelector('.tab[data-tab="preporuke"]'), window);
+      assertIncludes(doc.getElementById('recsList').textContent, 'PVC/PV binding');
+    });
+    await test('The "not recognized" finding now points to fixing the pod layer first, not a dead end', async () => {
+      assertIncludes(doc.getElementById('findingsList').textContent, 'Kubernetes-level signals');
+    });
+  });
+
+  await suite('Kubernetes layer — probe kills during recovery', async () => {
+    const { window, doc } = await loadDom();
+    doc.getElementById('logsInput').value =
+      'Warning  Unhealthy  30s  kubelet  Liveness probe failed: HTTP probe failed with statuscode: 503\n' +
+      'elasticsearch: [gc][12] recovering translog';
+    click(doc.getElementById('analyzeBtn'), window);
+    await wait(300);
+    await test('Probe-kill recommendation exists, and its prerequisite demands confirming recovery is really in progress', async () => {
+      click(doc.querySelector('.tab[data-tab="preporuke"]'), window);
+      const t = doc.getElementById('recsList').textContent;
+      assertIncludes(t, 'relax the liveness probe');
+      assertIncludes(t, 'IS actually recovering');
+    });
+  });
+
+  await suite('Kubernetes layer — no false positives on a clean datastore-only incident', async () => {
+    const { window, doc } = await loadDom();
+    doc.getElementById('logsInput').value = '[ERROR] CorruptIndexException: checksum failed for segment_2.cfs';
+    click(doc.querySelector('#systemPicker button[data-val="elasticsearch"]'), window);
+    click(doc.getElementById('analyzeBtn'), window);
+    await wait(300);
+    await test('No Kubernetes-level findings appear when no k8s signal is present', async () => {
+      const t = doc.getElementById('findingsList').textContent;
+      assertNotIncludes(t, 'CrashLoopBackOff');
+      assertNotIncludes(t, 'OOMKilled');
+      assertNotIncludes(t, 'Evicted');
+    });
+  });
+
+  await suite('First-contact message asks for describe/events (why the pod stopped), not just logs', async () => {
+    const { window, doc } = await loadDom();
+    click(doc.getElementById('firstContactBtn'), window);
+    await wait(50);
+    await test('The message includes kubectl describe pod and get events', async () => {
+      const msg = doc.body.textContent;
+      assertIncludes(msg, 'kubectl describe pod');
+      assertIncludes(msg, 'kubectl get events');
+    });
+  });
+
+  await suite('Sidebar collapses after analysis (reclaims reading space)', async () => {
+    const { window, doc } = await loadDom();
+    await test('Before analysis the sidebar is visible', async () => {
+      assert(!doc.getElementById('layoutRoot').classList.contains('sidebar-collapsed'));
+    });
+    click(doc.querySelector('#sampleLinks button[data-s="elasticsearch"]'), window);
+    click(doc.getElementById('analyzeBtn'), window);
+    await wait(300);
+    await test('After analysis the sidebar auto-collapses', async () => {
+      assert(doc.getElementById('layoutRoot').classList.contains('sidebar-collapsed'));
+    });
+    await test('The header toggle brings it back', async () => {
+      click(doc.getElementById('sidebarToggle'), window);
+      assert(!doc.getElementById('layoutRoot').classList.contains('sidebar-collapsed'));
+    });
+    await test('"New incident" always restores the sidebar (you need the inputs again)', async () => {
+      click(doc.getElementById('sidebarToggle'), window); // collapse again
+      click(doc.getElementById('navNew'), window);
+      assert(!doc.getElementById('layoutRoot').classList.contains('sidebar-collapsed'));
+    });
+  });
+
+  await suite('Prerequisite command is visually distinct from the main command', async () => {
+    const { window, doc } = await loadDom();
+    click(doc.querySelector('#sampleLinks button[data-s="elasticsearch"]'), window);
+    click(doc.getElementById('analyzeBtn'), window);
+    await wait(300);
+    click(doc.querySelector('.tab[data-tab="preporuke"]'), window);
+    await test('The prereq command renders as a muted .cmd-prereq block, separate from the main .cmd', async () => {
+      const prereqBlock = doc.querySelector('#recsList pre.cmd-prereq');
+      assert(prereqBlock, 'expected a rendered prerequisite command block');
+      const mainCmd = doc.querySelector('#recsList pre.cmd:not(.cmd-prereq)');
+      assert(mainCmd, 'main command block should still exist without the prereq class');
+    });
+    await test('The prereq block is still copyable via the shared data-copy mechanism', async () => {
+      const btn = doc.querySelector('#recsList pre.cmd-prereq .copy-btn');
+      assert(btn && btn.hasAttribute('data-copy'));
+      click(btn, window);
+      await wait(20);
+      assertEqual(btn.textContent, 'copied ✓');
+    });
+  });
+
+  await suite('Clear requires a second click only when there is something to lose', async () => {
+    const { window, doc } = await loadDom();
+    await test('With empty inputs and no analysis, one click clears immediately (no friction added)', async () => {
+      click(doc.getElementById('resetBtn'), window);
+      await wait(20);
+      assert(!doc.getElementById('resetBtn').classList.contains('confirming'));
+      assertEqual(doc.getElementById('resetBtn').textContent, 'Clear');
+    });
+    await test('With an analyzed incident, the first click only arms the button', async () => {
+      click(doc.querySelector('#sampleLinks button[data-s="elasticsearch"]'), window);
+      click(doc.getElementById('analyzeBtn'), window);
+      await wait(300);
+      click(doc.getElementById('resetBtn'), window);
+      await wait(20);
+      assert(doc.getElementById('resetBtn').classList.contains('confirming'), 'button should be armed, not cleared');
+      assert(doc.getElementById('logsInput').value.length > 0, 'inputs must NOT be wiped on the first click');
+    });
+    await test('The second click actually clears', async () => {
+      click(doc.getElementById('resetBtn'), window);
+      await wait(20);
+      assertEqual(doc.getElementById('logsInput').value, '');
+      assertEqual(doc.getElementById('resetBtn').textContent, 'Clear');
+    });
+  });
+
+  await suite('Incident ID is editable by clicking it in the header', async () => {
+    const { window, doc } = await loadDom();
+    await test('Before any analysis, clicking the ID does nothing (nothing to rename)', async () => {
+      click(doc.getElementById('incidentId'), window);
+      assert(!doc.querySelector('#incidentId input'));
+    });
+    click(doc.querySelector('#sampleLinks button[data-s="elasticsearch"]'), window);
+    click(doc.getElementById('analyzeBtn'), window);
+    await wait(300);
+    await test('Clicking the generated ID opens an inline input pre-filled with it', async () => {
+      click(doc.getElementById('incidentId'), window);
+      const inp = doc.querySelector('#incidentId input');
+      assert(inp, 'expected an inline input');
+      assert(inp.value.length > 0);
+    });
+    await test('Typing a shared ticket ID and pressing Enter saves it to the incident and the header', async () => {
+      const inp = doc.querySelector('#incidentId input');
+      inp.value = 'TICKET-4711';
+      inp.dispatchEvent(new window.KeyboardEvent('keydown', { key:'Enter', bubbles:true }));
+      await wait(20);
+      assertEqual(doc.getElementById('incidentId').textContent, 'TICKET-4711');
+    });
+    await test('The renamed ID shows up in History too (both colleagues see the same name)', async () => {
+      click(doc.getElementById('navHistory'), window);
+      await wait(50);
+      assertIncludes(doc.getElementById('historyList').textContent, 'TICKET-4711');
+    });
+  });
+
+  await suite('Handover round-trip — colleague continues exactly where you stopped', async () => {
+    // ---- Window A: work an incident partway through ----
+    const A = await loadDom();
+    let handoverJson = null;
+    // download() goes through URL.createObjectURL — capture the payload there.
+    // jsdom's Blob has no .text(), so read it with jsdom's own FileReader.
+    A.window.URL.createObjectURL = (blob) => {
+      const r = new A.window.FileReader();
+      r.onload = () => { handoverJson = String(r.result); };
+      r.readAsText(blob);
+      return 'blob:captured';
+    };
+    A.window.URL.revokeObjectURL = () => {};
+    click(A.doc.querySelector('#sampleLinks button[data-s="elasticsearch"]'), A.window);
+    click(A.doc.getElementById('analyzeBtn'), A.window);
+    await wait(300);
+    // progress: one rec done + assignee
+    click(A.doc.querySelector('.tab[data-tab="preporuke"]'), A.window);
+    // jsdom: dispatched click events have no activation behavior on checkboxes,
+    // so set checked directly and fire the change event the UI listens for.
+    const doneCb = A.doc.querySelector('#recsList .rec-done');
+    doneCb.checked = true;
+    doneCb.dispatchEvent(new A.window.Event('change', { bubbles: true }));
+    const assignee = A.doc.querySelector('#recsList .rec-assignee');
+    assignee.value = 'Miodrag';
+    assignee.dispatchEvent(new A.window.Event('input', { bubbles: true }));
+    // shared ticket id
+    click(A.doc.getElementById('incidentId'), A.window);
+    const idInput = A.doc.querySelector('#incidentId input');
+    idInput.value = 'TICKET-9000';
+    idInput.dispatchEvent(new A.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    // one custom rule
+    A.doc.getElementById('ruleRegex').value = 'OurInternalError';
+    A.doc.getElementById('ruleTitle').value = 'Custom: internal error';
+    A.doc.getElementById('ruleRegex').dispatchEvent(new A.window.Event('input', { bubbles: true }));
+    click(A.doc.getElementById('addRuleBtn'), A.window);
+    await wait(50);
+    click(A.doc.getElementById('handoverBtn'), A.window);
+    await wait(100);
+
+    await test('The handover file contains the incident AND the custom rules, unredacted', async () => {
+      assert(handoverJson, 'handover payload should have been captured');
+      const p = JSON.parse(handoverJson);
+      assert(p._handover === true);
+      assertEqual(p.incident.id, 'TICKET-9000');
+      assert(p.incident.rawLogs.includes('CorruptIndexException'), 'raw logs must be present and NOT redacted');
+      assertEqual(p.customRules.length, 1);
+      assert(p.incident.recs.some(r => r.done && r.assignee === 'Miodrag'), 'checklist progress must be in the file');
+    });
+
+    // ---- Window B: a different colleague, clean session ----
+    const B = await loadDom();
+    await test('Importing the handover opens the incident immediately as current, with the shared ID in the header', async () => {
+      const file = new B.window.File([handoverJson], 'TICKET-9000_HANDOVER.json', { type: 'application/json' });
+      const input = B.doc.getElementById('importFile');
+      Object.defineProperty(input, 'files', { value: [file], configurable: true });
+      input.dispatchEvent(new B.window.Event('change', { bubbles: true }));
+      await wait(200);
+      assertEqual(B.doc.getElementById('incidentId').textContent, 'TICKET-9000');
+      assert(B.doc.getElementById('findingsList').textContent.includes('segment corruption'),
+        'findings must be rendered without any re-analysis');
+    });
+    await test('Checklist progress and assignee survived the handover', async () => {
+      click(B.doc.querySelector('.tab[data-tab="preporuke"]'), B.window);
+      assert(B.doc.querySelector('#recsList .rec-done').checked, 'the Done checkbox must arrive checked');
+      assertEqual(B.doc.querySelector('#recsList .rec-assignee').value, 'Miodrag');
+    });
+    await test('The custom rule traveled along', async () => {
+      assertEqual(B.doc.getElementById('countPravila').textContent, '1');
+    });
+    await test('A random JSON file is rejected without touching the console state', async () => {
+      const junk = new B.window.File(['{"foo":1}'], 'junk.json', { type: 'application/json' });
+      const input = B.doc.getElementById('importFile');
+      Object.defineProperty(input, 'files', { value: [junk], configurable: true });
+      input.dispatchEvent(new B.window.Event('change', { bubbles: true }));
+      await wait(100);
+      assertEqual(B.doc.getElementById('incidentId').textContent, 'TICKET-9000', 'current incident must be untouched');
+    });
+  });
+
+  await suite('Opening an incident from History updates the header ID', async () => {
+    const { window, doc } = await loadDom();
+    click(doc.querySelector('#sampleLinks button[data-s="elasticsearch"]'), window);
+    click(doc.getElementById('analyzeBtn'), window);
+    await wait(300);
+    const firstId = doc.getElementById('incidentId').textContent;
+    click(doc.getElementById('navNew'), window);
+    click(doc.querySelector('#sampleLinks button[data-s="clickhouse"]'), window);
+    click(doc.getElementById('analyzeBtn'), window);
+    await wait(300);
+    await test('Clicking the older incident in History puts ITS id back into the header', async () => {
+      click(doc.getElementById('navHistory'), window);
+      await wait(50);
+      const items = doc.querySelectorAll('.history-item');
+      click(items[items.length - 1], window); // oldest
+      await wait(100);
+      assertEqual(doc.getElementById('incidentId').textContent, firstId);
+    });
+  });
+
+  await suite('Postmortem generator', async () => {
+    const { window, doc } = await loadDom();
+    click(doc.querySelector('#sampleLinks button[data-s="elasticsearch"]'), window);
+    click(doc.getElementById('analyzeBtn'), window);
+    await wait(300);
+    // mark one action done with an assignee so Resolution has content
+    click(doc.querySelector('.tab[data-tab="preporuke"]'), window);
+    const cb = doc.querySelector('#recsList .rec-done');
+    cb.checked = true;
+    cb.dispatchEvent(new window.Event('change', { bubbles: true }));
+    const asg = doc.querySelector('#recsList .rec-assignee');
+    asg.value = 'Miodrag';
+    asg.dispatchEvent(new window.Event('input', { bubbles: true }));
+
+    click(doc.getElementById('postmortemBtn'), window);
+    await wait(100);
+    const modalText = doc.getElementById('modalWrap').textContent;
+
+    await test('Draft opens with the DRAFT status and the incident header', async () => {
+      assertIncludes(modalText, 'Postmortem');
+      assertIncludes(modalText, 'Status: DRAFT');
+      assertIncludes(modalText, 'ELASTICSEARCH');
+    });
+    await test('Root cause section carries the critical finding WITH its log evidence', async () => {
+      assertIncludes(modalText, 'Root cause');
+      assertIncludes(modalText, 'segment corruption');
+      assertIncludes(modalText, 'CorruptIndexException');
+    });
+    await test('Timeline section is reconstructed from the log timestamps', async () => {
+      assertIncludes(modalText, '## Timeline');
+      assertIncludes(modalText, '2026');
+    });
+    await test('Resolution lists the done action with assignee; outstanding items get an owner TODO', async () => {
+      assertIncludes(modalText, '[x]');
+      assertIncludes(modalText, 'Miodrag');
+      assertIncludes(modalText, 'owner: TODO');
+    });
+    await test('What the tool cannot know stays an explicit TODO (impact, lessons)', async () => {
+      assertIncludes(modalText, 'Impact');
+      assertIncludes(modalText, 'customer-visible impact');
+      assertIncludes(modalText, 'Where we got lucky');
+    });
+  });
+
+  await suite('Findings are sorted critical-first, regardless of analyzer output order', async () => {
+    const { window, doc } = await loadDom();
+    click(doc.querySelector('#sampleLinks button[data-s="elasticsearch"]'), window);
+    click(doc.getElementById('analyzeBtn'), window);
+    await wait(300);
+    await test('The CRITICAL corruption finding appears before the WARNING cluster-status finding', async () => {
+      const t = doc.getElementById('findingsList').textContent;
+      assert(t.indexOf('segment corruption') < t.indexOf('Cluster status'),
+        'critical finding must be sorted ahead of a warning finding');
+    });
+  });
+
+  await suite('Evidence: matched fragment is highlighted and click reveals surrounding context', async () => {
+    const { window, doc } = await loadDom();
+    click(doc.querySelector('#sampleLinks button[data-s="elasticsearch"]'), window);
+    click(doc.getElementById('analyzeBtn'), window);
+    await wait(300);
+    await test('The evidence quote contains a <mark> around the matched fragment', async () => {
+      const quote = doc.querySelector('.evidence-quote');
+      assert(quote.innerHTML.includes('<mark'), 'expected a <mark> around the matched substring');
+    });
+    await test('Clicking the evidence line reveals surrounding log context', async () => {
+      const quote = doc.querySelector('.evidence-quote');
+      const idx = quote.dataset.findingIdx;
+      const ctx = doc.getElementById('ctx-' + idx);
+      assertEqual(ctx.style.display, 'none');
+      click(quote, window);
+      assertEqual(ctx.style.display, 'block');
+      assertIncludes(ctx.textContent, 'LOGS');
+    });
+    await test('Clicking it again collapses the context', async () => {
+      const quote = doc.querySelector('.evidence-quote');
+      click(quote, window);
+      const idx = quote.dataset.findingIdx;
+      assertEqual(doc.getElementById('ctx-' + idx).style.display, 'none');
+    });
+  });
+
+  await suite('Findings tab badge turns red/amber to reflect the worst severity inside', async () => {
+    const { window, doc } = await loadDom();
+    click(doc.querySelector('#sampleLinks button[data-s="elasticsearch"]'), window);
+    click(doc.getElementById('analyzeBtn'), window);
+    await wait(300);
+    await test('With a critical finding present, the tab count badge carries the danger class', async () => {
+      const badge = doc.querySelector('.tab[data-tab="nalaz"] .count');
+      assert(badge.classList.contains('danger'));
+    });
+  });
+
+  await suite('Risk chips filter the findings list', async () => {
+    const { window, doc } = await loadDom();
+    click(doc.querySelector('#sampleLinks button[data-s="elasticsearch"]'), window);
+    click(doc.getElementById('analyzeBtn'), window);
+    await wait(300);
+    await test('Clicking the critical chip shows only critical findings, with a filter note', async () => {
+      click(doc.querySelector('[data-sev-filter="danger"]'), window);
+      const t = doc.getElementById('findingsList').textContent;
+      assertIncludes(t, 'DANGER only');
+      assertIncludes(t, 'segment corruption');
+      assertNotIncludes(t, 'Cluster status');
+    });
+    await test('Clicking the same chip again clears the filter', async () => {
+      click(doc.querySelector('[data-sev-filter="danger"]'), window);
+      const t = doc.getElementById('findingsList').textContent;
+      assertIncludes(t, 'Cluster status');
+    });
+    await test('The "Clear filter" button also clears it', async () => {
+      click(doc.querySelector('[data-sev-filter="danger"]'), window);
+      click(doc.getElementById('clearFindingsFilter'), window);
+      assertIncludes(doc.getElementById('findingsList').textContent, 'Cluster status');
+    });
+  });
+
+  await suite('Ctrl+Enter in the logs textarea triggers Analyze', async () => {
+    const { window, doc } = await loadDom();
+    doc.getElementById('logsInput').value = '[ERROR] CorruptIndexException: checksum failed for segment_9.cfs';
+    click(doc.querySelector('#systemPicker button[data-val="elasticsearch"]'), window);
+    const evt = new window.KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, bubbles: true });
+    doc.getElementById('logsInput').dispatchEvent(evt);
+    await wait(300);
+    await test('Analysis ran without clicking the button', async () => {
+      assertIncludes(doc.getElementById('findingsList').textContent, 'segment corruption');
+    });
+  });
+
+  await suite('Re-analysis of the same session tags NEW findings', async () => {
+    const { window, doc } = await loadDom();
+    doc.getElementById('logsInput').value = '[ERROR] CorruptIndexException: checksum failed for segment_1.cfs';
+    click(doc.querySelector('#systemPicker button[data-val="elasticsearch"]'), window);
+    click(doc.getElementById('analyzeBtn'), window);
+    await wait(300);
+    await test('First-ever analysis shows no NEW badges', async () => {
+      assertNotIncludes(doc.getElementById('findingsList').textContent, 'NEW');
+    });
+    // second round: same corruption finding PLUS a new OOMKilled signal
+    doc.getElementById('logsInput').value =
+      '[ERROR] CorruptIndexException: checksum failed for segment_1.cfs\nReason: OOMKilled\nExit Code: 137';
+    click(doc.getElementById('analyzeBtn'), window);
+    await wait(300);
+    await test('The newly-appearing OOMKilled finding is tagged NEW; the repeated corruption finding is not', async () => {
+      const oomRow = Array.from(doc.querySelectorAll('.finding-row')).find(r => r.textContent.includes('OOMKilled'));
+      const corruptRow = Array.from(doc.querySelectorAll('.finding-row')).find(r => r.textContent.includes('segment corruption'));
+      assert(oomRow.querySelector('.badge.new'), 'OOMKilled finding should be marked NEW');
+      assert(!corruptRow.querySelector('.badge.new'), 'repeated corruption finding should NOT be marked NEW');
+      assertIncludes(doc.getElementById('findingsList').textContent, 'new finding');
+    });
+  });
+
+  await suite('Sticky verdict bar has a real sticky track (not a same-height wrapper)', async () => {
+    const { doc } = await loadDom();
+    // Structural regression guard: the earlier implementation wrapped the
+    // sticky bar in its own tightly-fit div, which gave CSS position:sticky
+    // zero room to actually stick (parent height == child height). The fix
+    // was to put the sticky class directly on a child of <main>.
+    await test('#verdictStickyWrap IS the sticky element (no nested wrapper div)', async () => {
+      const el = doc.getElementById('verdictStickyWrap');
+      assert(el.classList.contains('verdict-sticky'), 'the id element itself must carry the sticky class');
+      assertEqual(el.parentElement.tagName, 'MAIN', 'must be a direct child of <main> to have a tall sticky track');
+    });
+  });
+
+  await suite('Incident variables fill placeholders live in every command', async () => {
+    const { window, doc } = await loadDom();
+    // Needs a recommendation with a <namespace>/<pod-name> placeholder —
+    // the k8s-layer recs (e.g. OOMKilled) carry those; a pure ES corruption
+    // sample by itself doesn't.
+    doc.getElementById('logsInput').value =
+      'Reason: OOMKilled\nExit Code: 137\n[ERROR][o.e.i.e.Engine] [orders][2] CorruptIndexException[checksum failed]';
+    click(doc.querySelector('#systemPicker button[data-val="elasticsearch"]'), window);
+    click(doc.getElementById('analyzeBtn'), window);
+    await wait(300);
+    click(doc.querySelector('.tab[data-tab="preporuke"]'), window);
+    await test('Before filling variables, placeholders render as var-missing', async () => {
+      assert(doc.querySelector('#recsList mark.var-missing'), 'expected at least one unfilled placeholder marker');
+    });
+    await test('Typing a namespace live-fills every &lt;namespace&gt; placeholder without re-clicking Analyze', async () => {
+      const nsInput = doc.getElementById('var-namespace');
+      nsInput.value = 'instana-prod';
+      nsInput.dispatchEvent(new window.Event('input', { bubbles: true }));
+      const filled = Array.from(doc.querySelectorAll('#recsList mark.var-filled')).some(m => m.textContent === 'instana-prod');
+      assert(filled, 'expected a var-filled mark containing the typed namespace');
+    });
+    await test('The copy button copies the SUBSTITUTED command, not the raw placeholder', async () => {
+      const pre = Array.from(doc.querySelectorAll('#recsList pre.cmd:not(.cmd-prereq)'))
+        .find(p => p.textContent.includes('instana-prod'));
+      assert(pre, 'expected at least one command containing the substituted namespace');
+      assertNotIncludes(pre.textContent, '<namespace>');
+    });
+  });
+
+  await suite('Copy/send audit trail feeds the postmortem timeline', async () => {
+    const { window, doc } = await loadDom();
+    click(doc.querySelector('#sampleLinks button[data-s="elasticsearch"]'), window);
+    click(doc.getElementById('analyzeBtn'), window);
+    await wait(300);
+    click(doc.querySelector('.tab[data-tab="preporuke"]'), window);
+    const copyBtn = doc.querySelector('#recsList pre.cmd:not(.cmd-prereq) .copy-btn');
+    click(copyBtn, window);
+    await wait(20);
+    click(doc.getElementById('postmortemBtn'), window);
+    await wait(100);
+    await test('A copied command shows up as a 👤 timeline entry in the postmortem draft', async () => {
+      const modalText = doc.getElementById('modalWrap').textContent;
+      assertIncludes(modalText, '👤');
+      assertIncludes(modalText, 'Copied command:');
+    });
+  });
+
+  await suite('Status update generator', async () => {
+    const { window, doc } = await loadDom();
+    click(doc.querySelector('#sampleLinks button[data-s="elasticsearch"]'), window);
+    click(doc.getElementById('analyzeBtn'), window);
+    await wait(300);
+    click(doc.querySelector('.tab[data-tab="preporuke"]'), window);
+    click(doc.getElementById('statusUpdateBtn'), window);
+    await wait(100);
+    await test('Status update includes stage, progress, and elapsed time — no commands or customer instructions', async () => {
+      const t = doc.getElementById('modalWrap').textContent;
+      assertIncludes(t, 'Stage:');
+      assertIncludes(t, 'Progress:');
+      assertIncludes(t, 'Elapsed:');
+      assertNotIncludes(t, 'kubectl');
+    });
+  });
+
+  await suite('Incident timer shows in the header once an incident is open', async () => {
+    const { window, doc } = await loadDom();
+    await test('No timer before any analysis', async () => {
+      assertEqual(doc.getElementById('incidentTimer').style.display, 'none');
+    });
+    click(doc.querySelector('#sampleLinks button[data-s="elasticsearch"]'), window);
+    click(doc.getElementById('analyzeBtn'), window);
+    await wait(300);
+    await test('Timer is visible and shows an elapsed value after analysis', async () => {
+      const el = doc.getElementById('incidentTimer');
+      assertEqual(el.style.display, 'inline-block');
+      assertIncludes(el.textContent, 'm');
+    });
+    await test('Clear hides the timer again', async () => {
+      click(doc.getElementById('resetBtn'), window); // arm
+      click(doc.getElementById('resetBtn'), window); // confirm
+      assertEqual(doc.getElementById('incidentTimer').style.display, 'none');
+    });
+  });
+
+  await suite('Multi-datastore signals in one paste get a dismissible switch-system notice', async () => {
+    const { window, doc } = await loadDom();
+    doc.getElementById('logsInput').value =
+      '[ERROR][o.e.i.e.Engine] [orders][2] CorruptIndexException[checksum failed]\n' +
+      'kafka.common.errors.CorruptRecordException: Record batch for partition orders-3 is invalid';
+    click(doc.querySelector('#systemPicker button[data-val="elasticsearch"]'), window);
+    click(doc.getElementById('analyzeBtn'), window);
+    await wait(300);
+    await test('A notice appears naming the other detected system (Kafka)', async () => {
+      const t = doc.getElementById('multiSystemWrap').textContent;
+      assertIncludes(t, 'KAFKA');
+    });
+    await test('Clicking "Switch to KAFKA" changes the system picker without touching current findings', async () => {
+      click(doc.querySelector('[data-switch-system="kafka"]'), window);
+      assert(doc.querySelector('#systemPicker button[data-val="kafka"]').classList.contains('active'));
+      assertIncludes(doc.getElementById('findingsList').textContent, 'segment corruption');
+    });
+    await test('Dismiss removes the notice', async () => {
+      click(doc.getElementById('dismissMultiSystem'), window);
+      assertEqual(doc.getElementById('multiSystemWrap').style.display, 'none');
+    });
+  });
+
+  await suite('No false-positive multi-system notice on a clean single-system incident', async () => {
+    const { window, doc } = await loadDom();
+    click(doc.querySelector('#sampleLinks button[data-s="elasticsearch"]'), window);
+    click(doc.getElementById('analyzeBtn'), window);
+    await wait(300);
+    await test('No notice when the paste only matches one system', async () => {
+      assertEqual(doc.getElementById('multiSystemWrap').style.display, 'none');
+    });
+  });
+
+  const ok = summary();
+  process.exit(ok ? 0 : 1);
+}
+
+run().catch(err => {
+  console.error('FATAL ERROR IN TEST SUITE:', err);
+  process.exit(1);
+});
