@@ -1645,6 +1645,29 @@ FROM system.replicas WHERE is_readonly;</pre>`,
   // ============================================================
   // Per-system analysis (deeper pattern set)
   // ============================================================
+
+  // Parse the structured fields out of `stanctl unit status` output.
+  // The output looks like:
+  //   Unit: instana
+  //   Version: 3.319.465-0
+  //   Backend: degraded
+  //   Agent acceptor: available
+  //   Datastore impact: ClickHouse metrics/query path degraded
+  //
+  // Each field is matched case-insensitively and independently so a partial
+  // paste (e.g. only `stanctl unit status`, no `stanctl status`) still
+  // extracts what it can. Unknown values are returned as null so callers can
+  // distinguish "not present" from "present but empty".
+  function parseStanctlUnitStatus(text){
+    if(!text) return { backendState: null, agentAcceptor: null, datastoreImpact: null, version: null };
+    function field(re){ const m = String(text).match(re); return m ? m[1].trim() : null; }
+    const backendState    = field(/^[ \t]*backend\s*:\s*(.+)$/im);
+    const agentAcceptor   = field(/^[ \t]*agent[- ]acceptor\s*:\s*(.+)$/im);
+    const datastoreImpact = field(/^[ \t]*datastore[- ]impact\s*:\s*(.+)$/im);
+    const version         = field(/^[ \t]*version\s*:\s*(\d[\d.a-z-]+)/im);
+    return { backendState, agentAcceptor, datastoreImpact, version };
+  }
+
   function detectInstanaDatastore(text){
     const t = text || '';
     if(/instana-clickhouse|clickhouse|metrics_local|system\.detached_parts|ReplicatedMergeTree/i.test(t)) return 'clickhouse';
@@ -1653,55 +1676,94 @@ FROM system.replicas WHERE is_readonly;</pre>`,
     return 'unknown';
   }
 
-  function instanaImpact(datastore, text){
-    const lower = String(text || '').toLowerCase();
-    const backendDown = /backend:\s*(down|unavailable)|ui.*(down|unavailable)|unit.*(failed|degraded)|crashloopbackoff/i.test(text);
+  function instanaImpact(datastore, text, stanctlParsed){
+    // Use the parsed stanctl fields when available; fall back to a broad
+    // regex scan so the function still works when stanctl output is missing.
+    const p = stanctlParsed || {};
+    const bs = (p.backendState || '').toLowerCase();
+    const aa = (p.agentAcceptor || '').toLowerCase();
+
+    // Severity ladder from the parsed backend state:
+    //   down / unavailable / failed  → danger
+    //   degraded / partial / error   → danger
+    //   available / ok / healthy     → safe  (recovered / minor)
+    //   not parsed                   → fallback to regex heuristic
+    let backendSev;
+    if(bs){
+      backendSev = /down|unavailable|failed/.test(bs)      ? 'danger'
+                 : /degraded|partial|error/.test(bs)       ? 'danger'
+                 : /^available$|^ok$|^healthy$|^running$/.test(bs) ? 'safe'
+                 : 'warn';
+    } else {
+      backendSev = /backend:\s*(down|unavailable)|ui.*(down|unavailable)|unit.*(failed|degraded)|crashloopbackoff/i.test(text) ? 'danger' : 'warn';
+    }
+
+    // Agent acceptor note — appended to the impact message when parsed.
+    const acceptorNote = aa
+      ? (/^available$|^ok$|^healthy$/.test(aa)
+          ? ' Agent acceptor is currently available — raw ingest may still reach the backend, but downstream processing/query can lag or fail while the datastore is degraded.'
+          : ` Agent acceptor is ${p.agentAcceptor} — ingest may be affected in addition to query/processing.`)
+      : '';
+
     if(datastore === 'clickhouse'){
       return {
-        sev: backendDown ? 'danger' : 'warn',
+        sev: backendSev === 'safe' ? 'warn' : backendSev,
         area: 'metrics and query path',
-        note: 'ClickHouse stores Instana metric/event style data. A failed ClickHouse pod commonly means degraded charts, slow or failed analytics queries, and possible ingest backpressure depending on the unit state.'
+        note: `ClickHouse stores Instana metric/event style data. A failed ClickHouse pod commonly means degraded charts, slow or failed analytics queries, and possible ingest backpressure.${acceptorNote}`
       };
     }
     if(datastore === 'kafka'){
       return {
         sev: 'danger',
         area: 'ingest pipeline and async processing',
-        note: 'Kafka is on the ingest path. A broker crash or corrupt segment can block or delay agent data ingestion and internal processing. RF=1 on an affected topic is a permanent-loss risk.'
+        note: `Kafka is on the ingest path. A broker crash or corrupt segment can block or delay agent data ingestion and internal processing. RF=1 on an affected topic is a permanent-loss risk.${acceptorNote}`
       };
     }
     if(datastore === 'elasticsearch'){
       return {
-        sev: backendDown ? 'danger' : 'warn',
+        sev: backendSev === 'safe' ? 'warn' : backendSev,
         area: 'search, logs/traces metadata, and backend query features',
-        note: 'Elasticsearch issues usually show up as red/yellow health, unavailable shards, degraded search/query features, and noisy backend component failures that depend on affected indices.'
+        note: `Elasticsearch issues usually show up as red/yellow health, unavailable shards, degraded search/query features, and noisy backend component failures that depend on affected indices.${acceptorNote}`
       };
     }
     return {
-      sev: backendDown ? 'danger' : 'warn',
+      sev: backendSev,
       area: 'unknown datastore impact',
-      note: 'The paste looks Instana-specific, but the affected datastore was not clear. Collect the Instana urgent bundle before recommending any recovery command.'
+      note: `The paste looks Instana-specific, but the affected datastore was not clear. Collect the Instana urgent bundle before recommending any recovery command.${acceptorNote}`
     };
   }
 
   function analyzeInstana(logs, status){
     const text = `${logs}\n${status}`;
     const datastore = detectInstanaDatastore(text);
-    const impact = instanaImpact(datastore, text);
+    // Parse stanctl unit status from BOTH pasted fields — customers sometimes
+    // paste stanctl output in logs and kubectl in status, or the other way around.
+    const stanctlParsed = parseStanctlUnitStatus(text);
+    const impact = instanaImpact(datastore, text, stanctlParsed);
     const findings = [];
     const recs = [];
     const preventive = [];
 
     const hasStanctl = /stanctl/i.test(text);
     const hasNs = /instana-(clickhouse|kafka|elasticsearch)|\bnamespace:\s*instana/i.test(text);
-    const hasUnitVersion = /version:\s*\d+\.\d+\.\d+|Unit:\s*instana|unit status/i.test(text);
-    const hasBackendDegraded = /backend:\s*(degraded|down|unavailable)|unit.*(degraded|failed)/i.test(text);
-    const hasAgentAcceptor = /agent[- ]acceptor/i.test(text);
+    const hasUnitVersion = !!(stanctlParsed.version) || /version:\s*\d+\.\d+\.\d+|Unit:\s*instana|unit status/i.test(text);
     const hasPVC = /persistentvolumeclaim|pvc|Bound|FailedMount|FailedAttachVolume/i.test(text);
     const hasRF1 = /ReplicationFactor:\s*1(\s|$)/m.test(text);
     const hasSnapshot = /snapshot|backup/i.test(text);
 
-    findings.push({ sev: impact.sev, confidence:'high', title:`Instana impact: ${impact.area}`,
+    // Derive backend/acceptor state from parsed fields first; fall back to
+    // regex only when parsing yielded nothing.
+    const bs = (stanctlParsed.backendState || '').toLowerCase();
+    const aa = (stanctlParsed.agentAcceptor || '').toLowerCase();
+    const hasBackendDegraded = bs
+      ? /down|unavailable|failed|degraded|partial|error/.test(bs)
+      : /backend:\s*(degraded|down|unavailable)|unit.*(degraded|failed)/i.test(text);
+    const backendIsAvailable  = bs ? /^available$|^ok$|^healthy$|^running$/.test(bs) : false;
+    const acceptorAvailable   = aa ? /^available$|^ok$|^healthy$/.test(aa) : /agent[- ]acceptor\s*:\s*(available|ok)/i.test(text);
+    const acceptorDown        = aa ? !/^available$|^ok$|^healthy$/.test(aa) && aa.length > 0 : /agent[- ]acceptor\s*:\s*(unavailable|down|error)/i.test(text);
+
+    findings.push({ sev: impact.sev, confidence: stanctlParsed.backendState ? 'high' : 'medium',
+      title:`Instana impact: ${impact.area}`,
       note: impact.note, evidence: findEvidence(/backend:\s*(degraded|down|unavailable)|CrashLoopBackOff|datastore impact/i, text) });
 
     findings.push({ sev: datastore === 'unknown' ? 'warn' : 'safe', confidence: datastore === 'unknown' ? 'low' : 'high',
@@ -1714,13 +1776,35 @@ FROM system.replicas WHERE is_readonly;</pre>`,
       note:'Without the Instana unit view, support cannot confidently say whether this is ingest-only, query-only, or full backend impact.' });
     if(!hasNs) findings.push({ sev:'warn', confidence:'medium', title:'Missing Instana namespace/resource inventory',
       note:'Need the affected namespace plus StatefulSet/Pod/PVC status to avoid guessing the owner, storage object, and blast radius.' });
-    if(hasUnitVersion) findings.push({ sev:'safe', confidence:'high', title:'Instana version/unit context present',
+
+    // Version finding — include the actual parsed version number when available.
+    if(hasUnitVersion) findings.push({ sev:'safe', confidence:'high',
+      title: stanctlParsed.version ? `Instana version ${stanctlParsed.version} — unit context present` : 'Instana version/unit context present',
       note:'Version and unit context are available, which makes escalation and ENG handoff much clearer.' });
-    if(hasBackendDegraded) findings.push({ sev:'danger', confidence:'high', title:'Instana backend/unit is degraded',
+
+    // Backend state — use parsed value for an exact label and HIGH confidence.
+    if(hasBackendDegraded) findings.push({ sev:'danger', confidence: stanctlParsed.backendState ? 'high' : 'medium',
+      title: stanctlParsed.backendState ? `Instana backend state: ${stanctlParsed.backendState}` : 'Instana backend/unit is degraded',
       note:'Treat this as customer-impacting until a fresh unit status and backend smoke check prove otherwise.',
       evidence: findEvidence(/backend:\s*(degraded|down|unavailable)|unit.*(degraded|failed)/i, text) });
-    if(hasAgentAcceptor) findings.push({ sev:'warn', confidence:'medium', title:'Agent acceptor mentioned',
-      note:'If agent acceptor is available while datastore is degraded, ingest may still accept data but downstream processing/query can lag or fail. Verify backlog and backend health before closing.' });
+    else if(backendIsAvailable) findings.push({ sev:'safe', confidence:'high',
+      title: `Instana backend state: ${stanctlParsed.backendState}`,
+      note:'Backend reports as available. Confirm with a UI smoke-check and query before closing the incident.' });
+
+    // Agent acceptor — emit a finding only when there is a concrete signal.
+    if(acceptorAvailable && hasBackendDegraded) findings.push({ sev:'warn', confidence: aa ? 'high' : 'medium',
+      title: aa ? `Agent acceptor: ${stanctlParsed.agentAcceptor}` : 'Agent acceptor appears available',
+      note:'Ingest may still accept data while the datastore is degraded, building an invisible backlog. Verify backlog size and backend health before closing.' });
+    if(acceptorDown) findings.push({ sev:'danger', confidence: aa ? 'high' : 'medium',
+      title: aa ? `Agent acceptor: ${stanctlParsed.agentAcceptor}` : 'Agent acceptor appears unavailable',
+      note:'Agent ingest is also affected. This is a full-stack outage: new monitoring data is not being received while this persists.' });
+
+    // Datastore impact line from stanctl — surfaces the exact text stanctl printed.
+    if(stanctlParsed.datastoreImpact) findings.push({ sev:'warn', confidence:'high',
+      title: `Instana reported datastore impact: ${stanctlParsed.datastoreImpact}`,
+      note:'This is the exact impact text from stanctl unit status — use it to scope customer-visible effects in the acknowledgment message.',
+      evidence: findEvidence(/datastore[- ]impact/i, text) });
+
     if(hasPVC) findings.push({ sev:'warn', confidence:'medium', title:'PVC/storage context present or implicated',
       note:'Good: storage state is part of the evidence. For Instana self-hosted, never delete PVCs during datastore recovery unless ENG explicitly confirms the data-loss path.' });
     if(hasRF1) findings.push({ sev:'danger', confidence:'high', title:'Kafka RF=1 risk in Instana backend',

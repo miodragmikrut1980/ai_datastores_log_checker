@@ -1631,6 +1631,92 @@ async function run() {
     });
   });
 
+  await suite('Instana — parseStanctlUnitStatus extracts structured fields', async () => {
+    await test('Parsed backend state "degraded" produces a HIGH-confidence finding with the exact value', async () => {
+      const { window: w, doc: d } = await loadDom();
+      d.getElementById('logsInput').value = [
+        'stanctl unit status', 'Unit: instana', 'Version: 3.319.465-0',
+        'Backend: degraded', 'Agent acceptor: available',
+        'Datastore impact: ClickHouse metrics/query path degraded', '',
+        'instana-clickhouse',
+        '2026.08.08 10:11:22 [ ERROR ] instana.metrics_local (ReplicatedMergeTree): Cannot read all data. Checksum mismatch.',
+      ].join('\n');
+      d.getElementById('statusInput').value = '';
+      click(d.querySelector('#systemPicker button[data-val="instana"]'), w);
+      click(d.getElementById('analyzeBtn'), w);
+      await wait(400);
+      const findings = d.getElementById('findingsList').textContent;
+      assertIncludes(findings, 'Instana backend state: degraded');
+      assertIncludes(findings, 'Agent acceptor: available');
+    });
+
+    await test('Parsed backend state "available" produces a safe finding instead of a danger one', async () => {
+      const { window: w, doc: d } = await loadDom();
+      d.getElementById('logsInput').value = [
+        'stanctl unit status', 'Version: 3.320.0-0', 'Backend: available',
+        'Agent acceptor: available', '', 'instana-clickhouse clickhouse-shard0-0 Running',
+      ].join('\n');
+      d.getElementById('statusInput').value = '';
+      click(d.querySelector('#systemPicker button[data-val="instana"]'), w);
+      click(d.getElementById('analyzeBtn'), w);
+      await wait(400);
+      const findings = d.getElementById('findingsList').textContent;
+      assertIncludes(findings, 'Instana backend state: available');
+      assert(!findings.includes('backend/unit is degraded'), 'should not flag degraded when backend is available');
+    });
+
+    await test('Parsed version is shown in the version finding title', async () => {
+      const { window: w, doc: d } = await loadDom();
+      d.getElementById('logsInput').value = [
+        'stanctl unit status', 'Version: 3.319.465-0', 'Backend: degraded',
+        'instana-clickhouse clickhouse-shard0-0 CrashLoopBackOff',
+      ].join('\n');
+      d.getElementById('statusInput').value = '';
+      click(d.querySelector('#systemPicker button[data-val="instana"]'), w);
+      click(d.getElementById('analyzeBtn'), w);
+      await wait(400);
+      assertIncludes(d.getElementById('findingsList').textContent, 'Instana version 3.319.465-0');
+    });
+
+    await test('Datastore impact line from stanctl surfaces as its own finding', async () => {
+      const { window: w, doc: d } = await loadDom();
+      d.getElementById('logsInput').value = [
+        'stanctl unit status', 'Backend: degraded',
+        'Datastore impact: ClickHouse metrics/query path degraded', 'instana-clickhouse',
+      ].join('\n');
+      d.getElementById('statusInput').value = '';
+      click(d.querySelector('#systemPicker button[data-val="instana"]'), w);
+      click(d.getElementById('analyzeBtn'), w);
+      await wait(400);
+      assertIncludes(d.getElementById('findingsList').textContent, 'ClickHouse metrics/query path degraded');
+    });
+
+    await test('Agent acceptor "unavailable" produces a danger finding (full-stack outage)', async () => {
+      const { window: w, doc: d } = await loadDom();
+      d.getElementById('logsInput').value = [
+        'stanctl unit status', 'Backend: degraded', 'Agent acceptor: unavailable',
+        'instana-kafka kafka broker CrashLoopBackOff',
+      ].join('\n');
+      d.getElementById('statusInput').value = '';
+      click(d.querySelector('#systemPicker button[data-val="instana"]'), w);
+      click(d.getElementById('analyzeBtn'), w);
+      await wait(400);
+      const findings = d.getElementById('findingsList').textContent;
+      assertIncludes(findings, 'Agent acceptor: unavailable');
+      assertIncludes(findings, 'full-stack outage');
+    });
+
+    await test('Without stanctl output the impact finding confidence is MEDIUM, not HIGH', async () => {
+      const { window: w, doc: d } = await loadDom();
+      d.getElementById('logsInput').value = 'instana-clickhouse clickhouse-shard0-0 CrashLoopBackOff';
+      d.getElementById('statusInput').value = '';
+      click(d.querySelector('#systemPicker button[data-val="instana"]'), w);
+      click(d.getElementById('analyzeBtn'), w);
+      await wait(400);
+      assertIncludes(d.getElementById('findingsList').textContent, 'MEDIUM CONFIDENCE');
+    });
+  });
+
   const ok = summary();
   process.exit(ok ? 0 : 1);
 }
