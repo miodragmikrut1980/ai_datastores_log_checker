@@ -1358,6 +1358,32 @@ async function run() {
     });
   });
 
+  await suite('The findings panel shows only ONE "what do I do" message at a time', async () => {
+    const { window, doc } = await loadDom();
+    // Regression guard: workflow-hint (the rich onboarding card) and
+    // emptyNalaz (the plain placeholder used consistently by every other
+    // tab) were both visible simultaneously on first load — two overlapping
+    // "paste logs, click Analyze" messages stacked on top of each other.
+    await test('On first load, only workflowHint is shown (not emptyNalaz too)', async () => {
+      assert(doc.getElementById('workflowHint').style.display !== 'none');
+      assertEqual(doc.getElementById('emptyNalaz').style.display, 'none');
+    });
+    click(doc.querySelector('#sampleLinks button[data-s="elasticsearch"]'), window);
+    click(doc.getElementById('analyzeBtn'), window);
+    await wait(300);
+    await test('After analysis, both are hidden (findings are showing instead)', async () => {
+      assertEqual(doc.getElementById('workflowHint').style.display, 'none');
+      assertEqual(doc.getElementById('emptyNalaz').style.display, 'none');
+    });
+    doc.getElementById('resetBtn').click();
+    doc.getElementById('resetBtn').click();
+    await wait(50);
+    await test('After Clear, only emptyNalaz reappears — workflowHint stays gone for the rest of the session', async () => {
+      assertEqual(doc.getElementById('workflowHint').style.display, 'none');
+      assert(doc.getElementById('emptyNalaz').style.display !== 'none');
+    });
+  });
+
   await suite('Verdict does not claim a "safe path" when the only fixes are blocked pending evidence', async () => {
     const { window, doc } = await loadDom();
     // Regression guard: applySafetyModel can BLOCK a 'safe'/'moderate' rec

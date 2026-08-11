@@ -229,8 +229,6 @@
   .workflow-hint .hint-icon{ font-size:18px; line-height:1; }
   .workflow-hint strong{ display:block; font-size:12px; margin-bottom:2px; }
   .workflow-hint span{ color:var(--muted); font-size:11.5px; }
-  .workflow-hint .hint-dismiss{ margin-left:auto; border:0; background:transparent; color:var(--muted); cursor:pointer; padding:0 3px; font-size:16px; }
-  .workflow-hint .hint-dismiss:hover{ color:var(--text); }
   .section-h{ display:flex; align-items:center; gap:8px; margin:22px 0 10px; font-size:12px; letter-spacing:.08em; text-transform:uppercase; color:var(--muted); }
   .section-h::after{ content:""; height:1px; flex:1; background:var(--border); }
   aside .field > label{ font-weight:700; }
@@ -758,9 +756,9 @@ kubectl logs &lt;pod&gt;
       <div id="multiSystemWrap" style="display:none"></div>
       <div class="workflow-hint" id="workflowHint">
         <div class="hint-icon">➜</div>
-        <div><strong>Start with evidence, then act</strong><span>Load customer logs or a diagnostic bundle. The console will identify the datastore, show the strongest evidence, and place safe checks before recovery actions.</span></div>
+        <div><strong>Start with evidence, then act</strong><span>Load customer logs or a diagnostic bundle — drag files in, paste them, or try an "Example" button on the left. The console will identify the datastore, show the strongest evidence, and place safe checks before recovery actions.</span></div>
       </div>
-      <div class="empty" id="emptyNalaz">Drag in files or paste logs/status on the left, then click "Analyze". Not sure what this should look like? Try the "Example" buttons on the left.</div>
+      <div class="empty" id="emptyNalaz" style="display:none">Drag in files or paste logs/status on the left, then click "Analyze". Not sure what this should look like? Try the "Example" buttons on the left.</div>
       <div id="findingsList"></div>
     </div>
 
