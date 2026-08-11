@@ -1358,6 +1358,60 @@ async function run() {
     });
   });
 
+  await suite('Safety box actually lists the missing evidence it references, and it\'s actionable', async () => {
+    const { window, doc } = await loadDom();
+    // Regression guard: the safety box said "the missing evidence below is
+    // collected" but for a moderate-risk blocked rec, nothing was actually
+    // listed below it — only buried in the prereq paragraph's prose, and
+    // only destructive recs had a (separate, non-matching-location) list.
+    doc.getElementById('logsInput').value = '[ERROR][o.e.i.e.Engine] [orders][2] CorruptIndexException[checksum failed]';
+    doc.getElementById('statusInput').value = '';
+    click(doc.querySelector('#systemPicker button[data-val="elasticsearch"]'), window);
+    click(doc.getElementById('analyzeBtn'), window);
+    await wait(300);
+    click(doc.querySelector('.tab[data-tab="preporuke"]'), window);
+    await test('A moderate-risk ("RISK" stamp) blocked rec has a missing-evidence list inside its own safety box', async () => {
+      const box = doc.querySelector('#recsList .rec-safety-box.blocked');
+      assert(box, 'expected at least one blocked safety box');
+      assert(box.querySelector('.missing-evidence'), 'the missing evidence list must live inside the safety box itself');
+      assert(box.querySelector('.jump-evidence-btn'), 'each missing item should be a clickable button');
+    });
+    await test('Clicking a missing-evidence item expands the sidebar and focuses Status output', async () => {
+      const btn = doc.querySelector('.jump-evidence-btn');
+      click(btn, window);
+      assert(!doc.getElementById('layoutRoot').classList.contains('sidebar-collapsed'));
+      assertEqual(doc.activeElement.id, 'statusInput');
+    });
+  });
+
+  await suite('Reviewer/second-approver fields show a live approval status pill', async () => {
+    const { window, doc } = await loadDom();
+    click(doc.querySelector('#sampleLinks button[data-s="elasticsearch"]'), window);
+    click(doc.getElementById('analyzeBtn'), window);
+    await wait(300);
+    click(doc.querySelector('.tab[data-tab="preporuke"]'), window);
+    const box = doc.querySelector('.rec-safety-box');
+    await test('Starts as "Pending review"', async () => {
+      assert(box, 'expected at least one rec requiring approval in this sample');
+      assertIncludes(box.querySelector('.approval-pill').textContent, 'Pending');
+      assert(box.querySelector('.approval-pill').classList.contains('todo'));
+    });
+    await test('Filling only Reviewer keeps it pending', async () => {
+      const reviewer = box.querySelector('.rec-reviewer');
+      reviewer.value = 'Ana';
+      reviewer.dispatchEvent(new window.Event('input', { bubbles: true }));
+      assert(box.querySelector('.approval-pill').classList.contains('todo'));
+    });
+    await test('Filling both flips the pill to approved', async () => {
+      const approver = box.querySelector('.rec-approver');
+      approver.value = 'Marko';
+      approver.dispatchEvent(new window.Event('input', { bubbles: true }));
+      const pill = box.querySelector('.approval-pill');
+      assertIncludes(pill.textContent, 'Reviewed');
+      assert(pill.classList.contains('done'));
+    });
+  });
+
   await suite('The findings panel shows only ONE "what do I do" message at a time', async () => {
     const { window, doc } = await loadDom();
     // Regression guard: workflow-hint (the rich onboarding card) and
