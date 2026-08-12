@@ -20,6 +20,10 @@
 set -uo pipefail
 
 DIR="${1:-}"
+DIR="${DIR%/}"  # strip a trailing slash — tab-completion always adds one for
+                # directories, and leaving it in produces an ugly "dir//file"
+                # in every message below (harmless, but looks like a typo in
+                # output a stressed on-call engineer is trying to trust).
 TYPE="${2:-}"
 
 if [[ -z "$DIR" || -z "$TYPE" || ! -d "$DIR" ]]; then
