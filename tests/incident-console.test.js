@@ -1358,6 +1358,75 @@ async function run() {
     });
   });
 
+  await suite('Replica/shard evidence check is semantic, not a bare keyword match', async () => {
+    // Found via a live simulated incident (ClickHouse OOMKilled under
+    // Instana, single-node deployment): the old check was
+    // `/replica|shard|.../i.test(status)` — pure substring presence. The
+    // sentence "no replica configured" (which states the OPPOSITE of
+    // verified health) satisfied it purely because the word "replica"
+    // appears in it, and looked IDENTICAL to a genuine "verified healthy"
+    // state in the UI — a real exploit path, not just a hypothetical.
+    const baseLogs = '[ERROR][o.e.i.e.Engine] [orders][2] CorruptIndexException[checksum failed]\nReason: OOMKilled';
+    async function analyzeWith(extraStatus){
+      const { window, doc } = await loadDom();
+      doc.getElementById('logsInput').value = baseLogs;
+      doc.getElementById('statusInput').value = 'Backend: degraded\nVersion: 3.1.0\n' + (extraStatus || '');
+      const instanaBtn = doc.querySelector('#systemPicker button[data-val="instana"]');
+      click(instanaBtn || doc.querySelector('#systemPicker button[data-val="elasticsearch"]'), window);
+      click(doc.getElementById('analyzeBtn'), window);
+      await wait(300);
+      click(doc.querySelector('.tab[data-tab="preporuke"]'), window);
+      const box = doc.querySelector('.rec-safety-box');
+      return { blocked: box ? box.classList.contains('blocked') : null,
+               note: box ? (box.querySelector('.evidence-status-note')||{}).textContent : null };
+    }
+    await test('A bare "no replica configured" mention no longer unblocks the gate', async () => {
+      const r = await analyzeWith('replica notes: no replica configured');
+      assert(r.blocked !== false, 'a bare negated mention must not satisfy the check');
+    });
+    await test('An ambiguous "no replica responded" (an outage, not N/A) stays blocked, not silently accepted', async () => {
+      const r = await analyzeWith('no replica responded to the healthcheck');
+      assert(r.blocked !== false);
+    });
+    await test('An unambiguous N/A statement ("single-node") unblocks AND is visibly labeled, not indistinguishable from verified', async () => {
+      const r = await analyzeWith('This deployment is single-node — no replica exists by design.');
+      assertEqual(r.blocked, false);
+      assertIncludes(r.note || '', 'N/A');
+    });
+    await test('Genuinely healthy evidence unblocks cleanly with no extra caveat note', async () => {
+      const r = await analyzeWith('replica: started, in-sync.');
+      assertEqual(r.blocked, false);
+      assert(!r.note, 'a clean verified state should not show an N/A or unhealthy caveat');
+    });
+    await test('No mention at all stays blocked', async () => {
+      const r = await analyzeWith('');
+      assertEqual(r.blocked, true);
+    });
+  });
+
+  await suite('Missing-evidence label and hint are system-specific, not generic Kafka jargon on every system', async () => {
+    const { window, doc } = await loadDom();
+    // Found via live simulation: "replica/ISR/shard health" (ISR is
+    // Kafka-only terminology) appeared on a ClickHouse recommendation,
+    // momentarily reading as if Kafka data had leaked into the wrong card.
+    doc.getElementById('logsInput').value = 'ClickHouse pod OOMKilled\nDB::Exception: memory limit exceeded';
+    doc.getElementById('statusInput').value = '';
+    click(doc.querySelector('#systemPicker button[data-val="clickhouse"]'), window);
+    click(doc.getElementById('analyzeBtn'), window);
+    await wait(300);
+    click(doc.querySelector('.tab[data-tab="preporuke"]'), window);
+    await test('ClickHouse\'s missing-evidence label does not say "ISR" (Kafka-only term)', async () => {
+      const label = doc.querySelector('.missing-evidence');
+      if(label) assertNotIncludes(label.textContent, 'ISR');
+    });
+    await test('The jump-evidence tooltip gives an exact, runnable ClickHouse command, not a generic pointer', async () => {
+      const btn = Array.from(doc.querySelectorAll('.jump-evidence-btn')).find(b => /replica|shard/i.test(b.textContent));
+      if(btn){
+        assertIncludes(btn.dataset.tooltip, 'system.replicas');
+      }
+    });
+  });
+
   await suite('Safety box actually lists the missing evidence it references, and it\'s actionable', async () => {
     const { window, doc } = await loadDom();
     // Regression guard: the safety box said "the missing evidence below is

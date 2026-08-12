@@ -513,6 +513,9 @@
   .rec-safety-box label{ display:inline-flex; flex-direction:column; gap:3px; margin-right:8px; color:var(--muted); font-size:11px; }
   .rec-safety-box input{ width:130px; padding:5px 7px; border:1px solid var(--line); border-radius:5px; background:var(--panel); color:var(--text); }
   .missing-evidence{ margin:5px 0 10px; color:var(--danger); font-size:11px; font-weight:700; }
+  .evidence-status-note{ margin:5px 0 10px; font-size:11px; padding:6px 9px; border-radius:5px; }
+  .evidence-status-note.not-applicable{ background:var(--panel-2); color:var(--muted); }
+  .evidence-status-note.unhealthy{ background:var(--danger-dim); color:var(--danger); font-weight:600; }
   .jump-evidence-btn{
     display:inline; background:none; border:0; border-bottom:1px dashed var(--danger); color:var(--danger);
     font:inherit; font-weight:700; padding:0; cursor:pointer;
@@ -2368,7 +2371,18 @@ FROM system.replicas WHERE is_readonly;</pre>`,
     // field, which is what's actually missing for the most common case.
     const missingListHtml = (blocked && r.missingEvidence && r.missingEvidence.length)
       ? `<div class="missing-evidence"><b>Missing:</b> ${r.missingEvidence.map(m=>
-          `<button type="button" class="jump-evidence-btn" data-tooltip="Jump to the Status output field">${escapeHtml(m)}</button>`).join(', ')}</div>`
+          `<button type="button" class="jump-evidence-btn" data-tooltip="${escapeHtml(evidenceHintFor(state.current.system, m))}">${escapeHtml(m)}</button>`).join(', ')}</div>`
+      : '';
+    // Auditable trail: when a moderate/destructive rec unblocks, show WHICH
+    // kind of evidence satisfied it — "not-applicable" (e.g. single-node,
+    // no replica by design) and "unhealthy" (a human is proceeding despite
+    // a flagged problem) both look identical to "verified healthy" unless
+    // this is shown explicitly, which is exactly how a bare keyword mention
+    // used to slip through unnoticed.
+    const evidenceStatusHtml = (!blocked && r.replicaEvidenceStatus && r.replicaEvidenceStatus !== 'verified')
+      ? `<p class="evidence-status-note ${r.replicaEvidenceStatus}">${r.replicaEvidenceStatus === 'not-applicable'
+          ? '&#9432; Replica/shard evidence: marked N/A in the pasted status (e.g. single-node deployment).'
+          : '&#9888; Replica/shard evidence: reported UNHEALTHY — proceeding is a deliberate human call, not a clean bill of health.'}</p>`
       : '';
     const approvalHtml = needsApproval ? `<div class="rec-safety-box ${blocked?'blocked':''}">
           <div class="safety-box-head">
@@ -2377,6 +2391,7 @@ FROM system.replicas WHERE is_readonly;</pre>`,
           </div>
           <p>${blocked ? 'Do not run or copy this command until the missing evidence below is collected and reviewed.' : 'For this change, record the engineer who reviewed it and a second approver before execution.'}</p>
           ${missingListHtml}
+          ${evidenceStatusHtml}
           <label>Reviewer <input type="text" class="rec-reviewer" data-idx="${idx}" data-arr="${cmdPrefix}" placeholder="name" value="${escapeHtml(r.reviewer||'')}"></label>
           <label>Second approver <input type="text" class="rec-approver" data-idx="${idx}" data-arr="${cmdPrefix}" placeholder="name" value="${escapeHtml(r.approver||'')}"></label>
         </div>` : '';
@@ -3803,10 +3818,75 @@ ${dangers.length ? `Open critical issue${dangers.length>1?'s':''}: ${dangers.map
   // recommendation is never a guarantee: if the evidence needed to make the
   // decision is absent, the action is blocked and the UI asks for that exact
   // evidence instead of presenting a deceptively actionable command.
+  // Was: `/replica|replicas|isr|.../i.test(status)` — a bare substring test.
+  // That meant the sentence "no replica configured" (which literally states
+  // the OPPOSITE of verified health) satisfied the gate, because the word
+  // "replica" appears in it. Worse, it made a single-node/no-replica
+  // topology (a completely legitimate, common setup) permanently
+  // unsatisfiable UNLESS someone learned to type a magic word — teaching
+  // exactly the workaround habit a safety gate exists to prevent.
+  //
+  // This distinguishes three real, auditable states instead of one binary:
+  //   'verified'        — a replica/shard keyword co-occurs with a positive
+  //                        health word (started/healthy/ok/in-sync/N/N).
+  //   'not-applicable'  — an explicit statement that no replica exists by
+  //                        design (single-node, not configured, N/A).
+  //   'unhealthy'       — co-occurs with a negative health word; the gate
+  //                        still opens (a human still has to make the call,
+  //                        same as before), but it's visibly flagged rather
+  //                        than silently indistinguishable from "verified".
+  //   'unclear'         — a bare/unrelated mention with no qualifying
+  //                        phrase — the old exploit path — still BLOCKED.
+  function evaluateReplicaEvidence(statusText){
+    const t = String(statusText||'');
+    if(!t.trim()) return 'unclear';
+    // Tightened on purpose: an earlier version also matched a bare
+    // "no <keyword>" prefix (e.g. "no replica responded to the ping" —
+    // which is actually an OUTAGE, not "not applicable"!). N/A now
+    // requires an unambiguous phrasing: the keyword immediately paired
+    // with a clear negation word, or explicit "single-node" language —
+    // not just the word "no" loosely near the keyword.
+    const naRe = /\b(?:replica|replicas|shard|shards|isr)\w*\b\s*[:-]?\s*(none|n\/a|not\s+applicable|not\s+configured|not\s+present|doesn'?t\s+exist)\b|\bsingle[- ]node\b[^\n.;]{0,40}\b(?:replica|replicas|shard|shards|isr)\w*\b|\b(?:replica|replicas|shard|shards|isr)\w*\b[^\n.;]{0,40}\bsingle[- ]node\b/i;
+    if(naRe.test(t)) return 'not-applicable';
+    const badRe = /\b(?:replica|replicas|shard|shards|isr)\w*\b[^\n.;]{0,40}\b(unhealthy|not\s+in[- ]sync|out\s+of\s+sync|under[- ]replicated|lagging|offline|down|missing|unassigned|failed)\b/i;
+    if(badRe.test(t)) return 'unhealthy';
+    const goodRe = /\b(?:replica|replicas|shard|shards|isr)\w*\b[^\n.;]{0,40}\b(started|healthy|ok|in[- ]sync|available|no\s+issues?|\d\/\d)\b/i;
+    if(goodRe.test(t)) return 'verified';
+    return 'unclear';
+  }
+  // Display label AND the missing-evidence copy are system-specific instead
+  // of one generic "replica/ISR/shard health" phrase for every datastore —
+  // "ISR" is Kafka-only jargon and was showing up on ClickHouse/ES recs too.
+  const REPLICA_EVIDENCE_LABEL = {
+    elasticsearch: 'shard/replica allocation',
+    clickhouse: 'replica/shard health (system.replicas)',
+    kafka: 'ISR / replication factor',
+    instana: "the underlying datastore's replica/shard health",
+  };
+
+  // Which exact command actually produces each kind of missing evidence,
+  // per system — "jump to the Status field" alone doesn't help when status
+  // is already pasted but doesn't contain the SPECIFIC thing that's still
+  // missing (e.g. Instana's own `stanctl status` never includes ClickHouse's
+  // internal replica health; that needs a separate ClickHouse-side query).
+  const EVIDENCE_HINT_COMMANDS = {
+    elasticsearch: { replica: 'GET _cat/shards?v', status: 'GET _cluster/health?level=indices', backup: 'GET _snapshot/_all', version: 'GET / (see version.number)' },
+    clickhouse:    { replica: 'SELECT table, replica_name, is_readonly FROM system.replicas WHERE is_readonly;', status: 'SELECT database, table, name, is_readonly FROM system.parts;', backup: 'Check your backup tool/cron for the last successful snapshot.', version: 'SELECT version();' },
+    kafka:         { replica: 'kafka-topics.sh --describe --under-replicated-partitions', status: 'kafka-topics.sh --describe', backup: 'Check your backup tool/cron for the last successful snapshot.', version: 'kafka-topics.sh --version' },
+    instana:       { replica: "stanctl status alone doesn't include this — run the datastore's OWN replica/shard check (see the ClickHouse/ES/Kafka command block in the sidebar).", status: 'stanctl status', backup: 'Check your backup tool/cron for the last successful snapshot of this datastore.', version: 'stanctl status  (see the Version: line)' },
+  };
+  function evidenceHintFor(system, missingLabel){
+    const set = EVIDENCE_HINT_COMMANDS[system] || EVIDENCE_HINT_COMMANDS.instana;
+    const l = missingLabel.toLowerCase();
+    const key = /replica|shard|isr/.test(l) ? 'replica' : /backup|snapshot/.test(l) ? 'backup' : /version/.test(l) ? 'version' : 'status';
+    return `Run: ${set[key]}`;
+  }
+
   function applySafetyModel(recs, system, logs, status){
     const hasStatus = !!String(status||'').trim();
     const hasBackupSignal = /snapshot|backup|repository|restore point/i.test(String(status||'') + '\n' + String(logs||''));
-    const hasReplicaSignal = /replica|replicas|isr|in-sync|started|replicationfactor|replication factor|shard/i.test(String(status||''));
+    const replicaEvidence = evaluateReplicaEvidence(status);
+    const replicaLabel = REPLICA_EVIDENCE_LABEL[system] || 'replica/ISR/shard health';
     const hasVersionSignal = /version|stanctl\s+.*\d+\.\d+|elasticsearch\s+\d|clickhouse\s+\d|kafka\s+\d/i.test(String(status||'') + '\n' + String(logs||''));
     return (recs||[]).map(r=>{
       const command = String(r.command||'');
@@ -3814,13 +3894,20 @@ ${dangers.length ? `Open critical issue${dangers.length>1?'s':''}: ${dangers.map
       const destructive = r.risk === 'destructive' || /drop|remove-corrupted|accept_data_loss|delete.*pvc/i.test(command);
       const missing = [];
       if(mutating && !hasStatus) missing.push('current status output');
-      if((r.risk === 'moderate' || destructive) && !hasReplicaSignal) missing.push('replica/ISR/shard health');
+      if((r.risk === 'moderate' || destructive) && (replicaEvidence === 'unclear')) missing.push(`${replicaLabel} (verified, not just mentioned)`);
       if(destructive && !hasBackupSignal) missing.push('verified backup or snapshot');
       if(mutating && system === 'instana' && !hasVersionSignal) missing.push('Instana/datastore version');
       r.mutating = mutating;
       r.requiresApproval = mutating;
       r.safetyStatus = missing.length ? 'blocked' : 'review-required';
       r.missingEvidence = missing;
+      // Auditable trail of WHICH state unblocked the gate — a reviewer
+      // reading this later (or in the postmortem) can tell "not-applicable"
+      // and "unhealthy, proceeded anyway" apart from a genuine clean bill
+      // of health, instead of every unblocked rec looking identical.
+      if((r.risk === 'moderate' || destructive) && replicaEvidence !== 'unclear'){
+        r.replicaEvidenceStatus = replicaEvidence;
+      }
       r.rollback = destructive
         ? 'No safe automatic rollback. Take/verify a backup first; if the result is wrong, stop and escalate for restore/recovery.'
         : 'Before execution, save the current manifest/configuration. If health worsens, revert that exact change and repeat the after-action checks.';
