@@ -1825,6 +1825,48 @@ async function run() {
     });
   });
 
+  await suite('A pasted status that is actually a failed command gets a distinct, explicit warning', async () => {
+    // Found via external review + live verification: a pasted status field
+    // can silently BE the error output of a failed exec/kubectl command
+    // rather than real data. The safety gate already correctly stays
+    // blocked (error text doesn't accidentally match evidence patterns),
+    // but nothing told the person WHY — same generic "missing evidence"
+    // as an empty paste. That's a wasted round-trip: they need to know the
+    // COMMAND failed and must be re-run, not that different data is needed.
+    const { window, doc } = await loadDom();
+    doc.getElementById('logsInput').value = '[ERROR][o.e.i.e.Engine] [orders][2] CorruptIndexException[checksum failed]';
+    doc.getElementById('statusInput').value = 'error: unable to upgrade connection: container not found ("elasticsearch")\ncommand terminated with exit code 1';
+    click(doc.querySelector('#systemPicker button[data-val="elasticsearch"]'), window);
+    click(doc.getElementById('analyzeBtn'), window);
+    await wait(300);
+    await test('The failed-capture banner names the exact matched error text', async () => {
+      const t = doc.getElementById('failedCaptureWrap').textContent;
+      assertIncludes(t, 'failed command');
+      assertIncludes(t, 'unable to upgrade connection');
+    });
+    await test('Clicking "Edit evidence" expands the sidebar and focuses Status output', async () => {
+      click(doc.getElementById('jumpFailedCapture'), window);
+      assert(!doc.getElementById('layoutRoot').classList.contains('sidebar-collapsed'));
+      assertEqual(doc.activeElement.id, 'statusInput');
+    });
+  });
+
+  await suite('Failed-capture banner does not false-positive on normal status/logs', async () => {
+    const { window, doc } = await loadDom();
+    click(doc.querySelector('#sampleLinks button[data-s="elasticsearch"]'), window);
+    click(doc.getElementById('analyzeBtn'), window);
+    await wait(300);
+    await test('No banner on a clean, healthy-looking incident', async () => {
+      assertEqual(doc.getElementById('failedCaptureWrap').style.display, 'none');
+    });
+    await test('An empty status field (no evidence at all) does not trigger this specific banner either — that\'s the generic "missing evidence" case, not "command failed"', async () => {
+      doc.getElementById('statusInput').value = '';
+      click(doc.getElementById('analyzeBtn'), window);
+      await wait(300);
+      assertEqual(doc.getElementById('failedCaptureWrap').style.display, 'none');
+    });
+  });
+
   await suite('No false-positive multi-system notice on a clean single-system incident', async () => {
     const { window, doc } = await loadDom();
     click(doc.querySelector('#sampleLinks button[data-s="elasticsearch"]'), window);

@@ -390,6 +390,8 @@
   mark.var-missing{ background:var(--accent-dim); color:var(--accent); border:1px dashed var(--accent); cursor:help; }
 
   .multi-system-card{ display:flex; align-items:center; justify-content:space-between; gap:14px; flex-wrap:wrap; }
+  .failed-capture-card{ display:flex; align-items:center; justify-content:space-between; gap:14px; flex-wrap:wrap; border-color:var(--danger); background:var(--danger-dim); }
+  .failed-capture-card code{ background:var(--panel-2); padding:1px 5px; border-radius:3px; font-size:11px; }
   .multi-system-card p{ margin:0; flex:1; min-width:240px; }
   .multi-system-actions{ display:flex; gap:8px; flex-shrink:0; flex-wrap:wrap; }
   .multi-system-actions button{ width:auto; padding:6px 11px; }
@@ -765,6 +767,7 @@ kubectl logs &lt;pod&gt;
 
     <div class="panel active" id="panel-nalaz">
       <div id="stopBannerWrap" style="display:none"></div>
+      <div id="failedCaptureWrap" style="display:none"></div>
       <div id="multiSystemWrap" style="display:none"></div>
       <div class="workflow-hint" id="workflowHint">
         <div class="hint-icon">➜</div>
@@ -1509,6 +1512,39 @@ FROM system.replicas WHERE is_readonly;</pre>`,
   function detectOtherSystems(logs, status, currentSystem){
     const t = (logs + '\n' + status).toLowerCase();
     return SYSTEM_REGISTRY.filter(s => s.key !== currentSystem && s.detect.test(t)).map(s => s.key);
+  }
+
+  // Found via a live simulation: a pasted status field can silently BE the
+  // error output of a failed exec/kubectl command (auth issue, wrong
+  // container name, network blip, RBAC) rather than real data. The safety
+  // gate already correctly stays blocked in that case (the error text
+  // doesn't accidentally match any evidence pattern), but nothing told the
+  // person WHY — it just looked like generic "missing evidence", the same
+  // message as if nothing had been pasted at all. That's a wasted
+  // round-trip: they need to know the COMMAND failed and must be re-run,
+  // not that they need to go find different data.
+  const FAILED_CAPTURE_PATTERNS = [
+    /error:\s*unable to upgrade connection/i,
+    /container\s+\S+\s+not found/i,
+    /command terminated with exit code\s*[1-9]/i,
+    /error from server/i,
+    /connection refused/i,
+    /\bunauthorized\b/i,
+    /\bforbidden\b/i,
+    /the server doesn'?t have a resource type/i,
+    /no such host|dial tcp.*(refused|timeout)/i,
+    /context deadline exceeded/i,
+    /error:\s*you must be logged in/i,
+    /couldn'?t connect to server/i,
+  ];
+  function detectFailedStatusCapture(status){
+    const t = String(status||'');
+    if(!t.trim()) return null;
+    for(const re of FAILED_CAPTURE_PATTERNS){
+      const m = re.exec(t);
+      if(m) return m[0];
+    }
+    return null;
   }
 
   // ============================================================
@@ -2682,6 +2718,28 @@ FROM system.replicas WHERE is_readonly;</pre>`,
     });
   }
 
+  // Distinct from "no evidence pasted" — this is "what WAS pasted is a
+  // failed command, not data". Not dismissible: unlike the multi-system
+  // notice (a judgment call), this is a factual read of the pasted text —
+  // staying visible is the point, since the underlying fix is always the
+  // same (re-run the command) regardless of how many times Analyze runs.
+  function renderFailedCaptureBanner(){
+    const wrap = document.getElementById('failedCaptureWrap');
+    const matched = state.current.failedStatusCapture;
+    if(!matched){ wrap.style.display = 'none'; wrap.innerHTML = ''; return; }
+    wrap.style.display = 'block';
+    wrap.innerHTML = `<div class="alert-card failed-capture-card">
+      <p>⛔ The pasted status output looks like a <b>failed command</b>, not real data — spotted: <code>${escapeHtml(matched)}</code>. Findings/recommendations below can't tell "confirmed healthy" apart from "we never actually got the data" from this. Re-run the status command and confirm it succeeds before treating this as evidence.</p>
+      <div class="multi-system-actions">
+        <button class="btn secondary small" id="jumpFailedCapture">Edit evidence</button>
+      </div>
+    </div>`;
+    document.getElementById('jumpFailedCapture').addEventListener('click', ()=>{
+      setSidebarCollapsed(false);
+      document.getElementById('statusInput').focus();
+    });
+  }
+
   function renderStopBanner(){
     const wrap = document.getElementById('stopBannerWrap');
     if(state.current.stopDismissed){ wrap.style.display = 'none'; wrap.innerHTML = ''; return; }
@@ -2718,6 +2776,7 @@ FROM system.replicas WHERE is_readonly;</pre>`,
     renderStageStepper();
     renderVerdictBanner(system, findings, recs);
     renderVerdictSticky(system, findings, recs);
+    renderFailedCaptureBanner();
     renderStopBanner();
     renderMultiSystemBanner();
 
@@ -4106,7 +4165,8 @@ ${dangers.length ? `Open critical issue${dangers.length>1?'s':''}: ${dangers.map
       // "other" hit found is Instana itself, there's nothing to flag.
       otherSystemsDetected: ['elasticsearch','clickhouse','kafka'].includes(system)
         ? detectOtherSystems(logs, status, system).filter(k => k !== 'instana')
-        : []
+        : [],
+      failedStatusCapture: detectFailedStatusCapture(status)
     };
     state.findingsFilter = null; // a fresh analysis shouldn't inherit a stale filter
     state.history.push(state.current);
@@ -4156,6 +4216,8 @@ ${dangers.length ? `Open critical issue${dangers.length>1?'s':''}: ${dangers.map
     document.getElementById('stopBannerWrap').innerHTML = '';
     document.getElementById('multiSystemWrap').style.display = 'none';
     document.getElementById('multiSystemWrap').innerHTML = '';
+    document.getElementById('failedCaptureWrap').style.display = 'none';
+    document.getElementById('failedCaptureWrap').innerHTML = '';
     document.getElementById('quickActions').classList.remove('visible');
     document.getElementById('quickActions').style.top = '53px';
     document.getElementById('findingsList').innerHTML = '';

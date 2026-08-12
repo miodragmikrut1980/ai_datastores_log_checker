@@ -1,5 +1,39 @@
 # Incident Toolkit — Instana / ES / ClickHouse / Kafka
 
+## Version 1.2.0 — semantic evidence model, structural gaps closed
+
+Found and fixed via a series of live simulated incidents (not code review —
+actually running the tool end-to-end against realistic, messy scenarios):
+
+- **Safety-gate evidence checks are now negation-aware**, not bare keyword
+  presence. The replica/shard, backup/snapshot, and Instana version checks
+  previously matched on any mention of the relevant word — "no backup
+  exists" or "Version: unknown" could satisfy them purely by containing
+  "backup"/"version". They now distinguish CONFIRMED (a positive-health word
+  actually co-occurs, with no negation between them), NOT-APPLICABLE (an
+  explicit "single-node"/"not configured" statement), UNHEALTHY (a
+  negative-health word — still opens the gate for human review, but visibly
+  flagged, not silently identical to "confirmed"), and UNCLEAR (stays
+  blocked — this is where the old exploit lived).
+- **A raw `kubectl get pods` line is now parsed for READY/RESTARTS**, not
+  just matched against known phrases like "CrashLoopBackOff". A pod showing
+  `0/1` ready with double-digit restarts previously produced a "✓ Stable —
+  no critical findings" verdict if STATUS happened to read "Running" in the
+  gap between crash-loop restarts.
+- **A pasted status field that is actually a failed command's error output**
+  (auth/RBAC/network/wrong-container-name) is now called out explicitly,
+  distinct from "no evidence pasted" — previously both looked identical.
+- Evidence-highlight formatting characters no longer leak into Markdown/
+  HTML/postmortem exports (they're still preserved in JSON/Handover, which
+  need them to re-render highlighting after import).
+- `recommend-agent.sh` no longer produces a `dir//file.txt`-style double
+  slash when its report-directory argument has a trailing slash (as
+  tab-completion always adds).
+
+See `git log` for full commit-by-commit detail — each fix above was found by
+actually role-playing a specific incident scenario through the real UI/CLI,
+not by reading the source.
+
 ## Version 1.1.0 — structured Instana evidence bundle
 
 The companion server now exposes `/instana/bundle`. It runs a fixed,
