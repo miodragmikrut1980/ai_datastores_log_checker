@@ -2379,11 +2379,16 @@ FROM system.replicas WHERE is_readonly;</pre>`,
     // a flagged problem) both look identical to "verified healthy" unless
     // this is shown explicitly, which is exactly how a bare keyword mention
     // used to slip through unnoticed.
-    const evidenceStatusHtml = (!blocked && r.replicaEvidenceStatus && r.replicaEvidenceStatus !== 'verified')
-      ? `<p class="evidence-status-note ${r.replicaEvidenceStatus}">${r.replicaEvidenceStatus === 'not-applicable'
-          ? '&#9432; Replica/shard evidence: marked N/A in the pasted status (e.g. single-node deployment).'
-          : '&#9888; Replica/shard evidence: reported UNHEALTHY — proceeding is a deliberate human call, not a clean bill of health.'}</p>`
-      : '';
+    function evidenceNote(kind, status){
+      if(!status || status === 'verified') return '';
+      const label = kind === 'backup' ? 'Backup/snapshot evidence' : 'Replica/shard evidence';
+      const example = kind === 'backup' ? 'e.g. no backup policy exists for this index' : 'e.g. single-node deployment';
+      return status === 'not-applicable'
+        ? `<p class="evidence-status-note not-applicable">&#9432; ${label}: marked N/A in the pasted status (${example}).</p>`
+        : `<p class="evidence-status-note unhealthy">&#9888; ${label}: reported UNHEALTHY — proceeding is a deliberate human call, not a clean bill of health.</p>`;
+    }
+    const evidenceStatusHtml = blocked ? '' :
+      evidenceNote('replica', r.replicaEvidenceStatus) + evidenceNote('backup', r.backupEvidenceStatus);
     const approvalHtml = needsApproval ? `<div class="rec-safety-box ${blocked?'blocked':''}">
           <div class="safety-box-head">
             <b>Safety gate: ${blocked ? 'BLOCKED — evidence is incomplete' : 'human approval required'}</b>
@@ -3826,33 +3831,60 @@ ${dangers.length ? `Open critical issue${dangers.length>1?'s':''}: ${dangers.map
   // unsatisfiable UNLESS someone learned to type a magic word — teaching
   // exactly the workaround habit a safety gate exists to prevent.
   //
-  // This distinguishes three real, auditable states instead of one binary:
-  //   'verified'        — a replica/shard keyword co-occurs with a positive
-  //                        health word (started/healthy/ok/in-sync/N/N).
-  //   'not-applicable'  — an explicit statement that no replica exists by
-  //                        design (single-node, not configured, N/A).
-  //   'unhealthy'       — co-occurs with a negative health word; the gate
-  //                        still opens (a human still has to make the call,
-  //                        same as before), but it's visibly flagged rather
-  //                        than silently indistinguishable from "verified".
-  //   'unclear'         — a bare/unrelated mention with no qualifying
-  //                        phrase — the old exploit path — still BLOCKED.
-  function evaluateReplicaEvidence(statusText){
-    const t = String(statusText||'');
+  // The same exact bug class turned out to also guard the BACKUP check for
+  // PERMANENT LOSS commands (found via a second live simulation): writing
+  // "no backup exists" contains both "backup" AND "exists" — a keyword
+  // co-occurring with what looks like a positive word, satisfying the old
+  // per-check regexes even though the sentence says the opposite. A naive
+  // "keyword near a positive word" check isn't enough by itself; it also
+  // has to confirm no negation word (no/not/without/never) sits between
+  // them, or "X exists"/"X available" will keep reading as confirmation
+  // even when directly negated.
+  //
+  // Generic, reused by both the replica/shard AND backup/snapshot checks so
+  // a fix to the negation-safety logic doesn't need to be duplicated (and
+  // potentially forgotten) in two places. Returns one of four real,
+  // auditable states instead of one binary:
+  //   'verified'        — keyword co-occurs with a positive word, with no
+  //                        negation word sitting between them.
+  //   'not-applicable'  — an explicit statement that the thing doesn't
+  //                        exist BY DESIGN (not configured, single-node,
+  //                        N/A) — distinct from it being missing/broken.
+  //   'unhealthy'       — keyword co-occurs with a negative/broken word;
+  //                        the gate still opens (a human still reviews it)
+  //                        but is visibly flagged, not silently identical
+  //                        to "verified".
+  //   'unclear'         — bare/unrelated mention, or a positive word that
+  //                        turned out to be negated — stays BLOCKED. This
+  //                        is the old exploit path, now closed.
+  function evaluateQualifiedEvidence(text, keywordAlt, positiveWords, negativeWords, naWords){
+    const t = String(text||'');
     if(!t.trim()) return 'unclear';
-    // Tightened on purpose: an earlier version also matched a bare
-    // "no <keyword>" prefix (e.g. "no replica responded to the ping" —
-    // which is actually an OUTAGE, not "not applicable"!). N/A now
-    // requires an unambiguous phrasing: the keyword immediately paired
-    // with a clear negation word, or explicit "single-node" language —
-    // not just the word "no" loosely near the keyword.
-    const naRe = /\b(?:replica|replicas|shard|shards|isr)\w*\b\s*[:-]?\s*(none|n\/a|not\s+applicable|not\s+configured|not\s+present|doesn'?t\s+exist)\b|\bsingle[- ]node\b[^\n.;]{0,40}\b(?:replica|replicas|shard|shards|isr)\w*\b|\b(?:replica|replicas|shard|shards|isr)\w*\b[^\n.;]{0,40}\bsingle[- ]node\b/i;
+    const KEY = String.raw`\b(?:${keywordAlt})\w*\b`;
+    const naRe = new RegExp(
+      KEY + String.raw`[^\n.;]{0,25}\b(${naWords})\b` + '|' +
+      String.raw`\b(${naWords})\b[^\n.;]{0,25}` + KEY, 'i');
     if(naRe.test(t)) return 'not-applicable';
-    const badRe = /\b(?:replica|replicas|shard|shards|isr)\w*\b[^\n.;]{0,40}\b(unhealthy|not\s+in[- ]sync|out\s+of\s+sync|under[- ]replicated|lagging|offline|down|missing|unassigned|failed)\b/i;
+    const badRe = new RegExp(KEY + String.raw`[^\n.;]{0,40}\b(${negativeWords})\b`, 'i');
     if(badRe.test(t)) return 'unhealthy';
-    const goodRe = /\b(?:replica|replicas|shard|shards|isr)\w*\b[^\n.;]{0,40}\b(started|healthy|ok|in[- ]sync|available|no\s+issues?|\d\/\d)\b/i;
-    if(goodRe.test(t)) return 'verified';
+    const goodRe = new RegExp('(' + String.raw`[^\n.;]{0,30}` + ')(' + KEY + String.raw`[^\n.;]{0,40}\b(?:${positiveWords})\b` + ')', 'i');
+    const m = goodRe.exec(t);
+    if(m && !/\b(no|not|without|lacking|lack|never)\b/i.test(m[1] || '')) return 'verified';
     return 'unclear';
+  }
+  function evaluateReplicaEvidence(statusText){
+    return evaluateQualifiedEvidence(statusText,
+      'replica|replicas|shard|shards|isr',
+      'started|healthy|ok|in-sync|in sync|available|no issues?|\\d\\/\\d',
+      'unhealthy|not in.sync|out of sync|under.replicated|lagging|offline|down|missing|unassigned|failed',
+      'none|n\\/a|not applicable|not configured|not present|doesn.t exist|single.node');
+  }
+  function evaluateBackupEvidence(statusText, logsText){
+    return evaluateQualifiedEvidence(String(statusText||'') + '\n' + String(logsText||''),
+      'backup|backups|snapshot|snapshots|repository',
+      'verified|confirmed|exists|available|taken|successful|completed|recent|valid',
+      'failed|missing|corrupt|stale|expired|unavailable|none found',
+      'none|n\\/a|not applicable|not configured|not registered|not present|not available|doesn.t exist');
   }
   // Display label AND the missing-evidence copy are system-specific instead
   // of one generic "replica/ISR/shard health" phrase for every datastore —
@@ -3884,7 +3916,7 @@ ${dangers.length ? `Open critical issue${dangers.length>1?'s':''}: ${dangers.map
 
   function applySafetyModel(recs, system, logs, status){
     const hasStatus = !!String(status||'').trim();
-    const hasBackupSignal = /snapshot|backup|repository|restore point/i.test(String(status||'') + '\n' + String(logs||''));
+    const backupEvidence = evaluateBackupEvidence(status, logs);
     const replicaEvidence = evaluateReplicaEvidence(status);
     const replicaLabel = REPLICA_EVIDENCE_LABEL[system] || 'replica/ISR/shard health';
     const hasVersionSignal = /version|stanctl\s+.*\d+\.\d+|elasticsearch\s+\d|clickhouse\s+\d|kafka\s+\d/i.test(String(status||'') + '\n' + String(logs||''));
@@ -3895,7 +3927,12 @@ ${dangers.length ? `Open critical issue${dangers.length>1?'s':''}: ${dangers.map
       const missing = [];
       if(mutating && !hasStatus) missing.push('current status output');
       if((r.risk === 'moderate' || destructive) && (replicaEvidence === 'unclear')) missing.push(`${replicaLabel} (verified, not just mentioned)`);
-      if(destructive && !hasBackupSignal) missing.push('verified backup or snapshot');
+      // Same exploit class as replica evidence, found via a second live
+      // simulation: a bare backup/snapshot substring test let "no backup
+      // exists for this index" — which states there is NO backup — satisfy
+      // the gate guarding a PERMANENT LOSS command, purely because the
+      // words "backup" and "exists" both appear in the sentence.
+      if(destructive && (backupEvidence === 'unclear')) missing.push('verified backup or snapshot (confirmed, not just mentioned)');
       if(mutating && system === 'instana' && !hasVersionSignal) missing.push('Instana/datastore version');
       r.mutating = mutating;
       r.requiresApproval = mutating;
@@ -3907,6 +3944,9 @@ ${dangers.length ? `Open critical issue${dangers.length>1?'s':''}: ${dangers.map
       // of health, instead of every unblocked rec looking identical.
       if((r.risk === 'moderate' || destructive) && replicaEvidence !== 'unclear'){
         r.replicaEvidenceStatus = replicaEvidence;
+      }
+      if(destructive && backupEvidence !== 'unclear'){
+        r.backupEvidenceStatus = backupEvidence;
       }
       r.rollback = destructive
         ? 'No safe automatic rollback. Take/verify a backup first; if the result is wrong, stop and escalate for restore/recovery.'

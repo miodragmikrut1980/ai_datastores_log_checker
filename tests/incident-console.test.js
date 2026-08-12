@@ -1358,6 +1358,47 @@ async function run() {
     });
   });
 
+  await suite('Backup/snapshot evidence check is semantic, not a bare keyword match (guards a PERMANENT LOSS command)', async () => {
+    // Found via a second live simulation: the SAME exploit class as the
+    // replica check, but guarding the destructive "accept_data_loss"
+    // command instead — higher stakes, since a false "evidence collected"
+    // signal here could green-light an actually irrecoverable action.
+    // "no backup exists for this index" (states there is NO backup)
+    // satisfied the old `/snapshot|backup|repository|.../i.test(...)`
+    // purely because "backup" and "exists" both appear in the sentence.
+    const baseLogs = '[ERROR][o.e.i.e.Engine] [orders][2] CorruptIndexException[checksum failed (hardware problem?)]';
+    async function analyzeWith(statusExtra){
+      const { window, doc } = await loadDom();
+      doc.getElementById('logsInput').value = baseLogs;
+      doc.getElementById('statusInput').value = 'Cluster status: RED\nReplica: single-node, no replica by design.\n' + (statusExtra || '');
+      click(doc.querySelector('#systemPicker button[data-val="elasticsearch"]'), window);
+      click(doc.getElementById('analyzeBtn'), window);
+      await wait(300);
+      click(doc.querySelector('.tab[data-tab="preporuke"]'), window);
+      const card = Array.from(doc.querySelectorAll('#recsList .rec')).find(c => /PERMANENT LOSS|Remove corrupted/i.test(c.textContent));
+      if(!card) return null;
+      const box = card.querySelector('.rec-safety-box');
+      return { blocked: box.classList.contains('blocked'), missing: (box.querySelector('.missing-evidence')||{}).textContent || null };
+    }
+    await test('The exact exploit phrase "no backup exists for this index" no longer unblocks the destructive command', async () => {
+      const r = await analyzeWith('Backup: no backup exists for this index.');
+      assert(r, 'expected the destructive rec to be present in this ES corruption scenario');
+      assert(r.blocked !== false, 'a negated "backup exists" mention must not satisfy the check');
+    });
+    await test('An unambiguous "backup policy: not configured" unblocks it (legitimately N/A)', async () => {
+      const r = await analyzeWith('Backup policy: not configured for this cluster.');
+      assertEqual(r.blocked, false);
+    });
+    await test('A genuinely confirmed backup ("snapshot: completed successfully") unblocks it', async () => {
+      const r = await analyzeWith('Latest snapshot: completed successfully 3h ago.');
+      assertEqual(r.blocked, false);
+    });
+    await test('No mention of backup at all keeps it blocked', async () => {
+      const r = await analyzeWith('');
+      assertEqual(r.blocked, true);
+    });
+  });
+
   await suite('Replica/shard evidence check is semantic, not a bare keyword match', async () => {
     // Found via a live simulated incident (ClickHouse OOMKilled under
     // Instana, single-node deployment): the old check was
