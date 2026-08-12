@@ -505,6 +505,18 @@
     border:none; border-radius:5px; padding:7px 14px; cursor:pointer;
   }
   .cmd-gate-btn:hover{ filter:brightness(1.1); }
+  .target-block{ margin:8px 0 10px; padding:8px 12px; border-radius:8px; border:1px solid var(--border); background:var(--panel-2); font-size:11.5px; }
+  .target-block.confirmed{ border-color:var(--safe); background:color-mix(in srgb, var(--safe) 7%, transparent); }
+  .target-block.incomplete{ border-color:var(--accent); background:color-mix(in srgb, var(--accent) 8%, transparent); }
+  .target-head{ font-weight:700; margin-bottom:5px; letter-spacing:.02em; }
+  .target-block.confirmed .target-head{ color:var(--safe); }
+  .target-block.incomplete .target-head{ color:var(--accent); }
+  .target-rows{ display:flex; flex-wrap:wrap; gap:4px 18px; font-family:var(--mono); }
+  .target-row{ display:flex; gap:6px; align-items:baseline; }
+  .target-label{ color:var(--muted); text-transform:uppercase; font-size:9.5px; letter-spacing:.04em; }
+  .target-value{ font-weight:700; }
+  .target-value.set{ color:var(--text); }
+  .target-value.unset{ color:var(--accent); font-style:italic; font-weight:400; }
   .rec-safety-box{ margin-top:10px; padding:10px; border:1px solid var(--warn); border-radius:8px; background:color-mix(in srgb, var(--warn) 8%, transparent); font-size:12px; }
   .rec-safety-box.blocked{ border-color:var(--danger); background:color-mix(in srgb, var(--danger) 9%, transparent); }
   .safety-box-head{ display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap; }
@@ -1057,6 +1069,19 @@ kubectl logs &lt;pod&gt;
     document.querySelectorAll('.cmd-text[data-raw-b64]').forEach(el=>{
       el.innerHTML = substituteVars(escapeHtml(b64decode(el.dataset.rawB64)));
     });
+    document.querySelectorAll('.target-block[data-target-keys]').forEach(block=>{
+      const keys = block.dataset.targetKeys.split(',').filter(Boolean);
+      const missing = keys.filter(k => !(state.vars[k]||'').trim());
+      block.className = 'target-block ' + (missing.length ? 'incomplete' : 'confirmed');
+      block.querySelector('.target-head').innerHTML = missing.length
+        ? `⚠ Target not fully confirmed — ${missing.length} field${missing.length>1?'s':''} not set below`
+        : '✓ Target confirmed';
+      block.querySelectorAll('.target-value').forEach((el,i)=>{
+        const val = (state.vars[keys[i]]||'').trim();
+        el.textContent = val || 'not set';
+        el.className = 'target-value ' + (val ? 'set' : 'unset');
+      });
+    });
   }
   function hasNonHeaderRows(text){
     if(!text) return false;
@@ -1551,8 +1576,29 @@ FROM system.replicas WHERE is_readonly;</pre>`,
   // Structured parsing (extract real entity names when possible)
   // ============================================================
   function parseEsShards(status){
-    // typical _cat/shards?v row: "index shard prirep state docs store node"
     const rows = [];
+    const trimmed = String(status||'').trim();
+    // Real `_cat/shards?format=json` output — prefer structured parsing
+    // when available. Found via a live fixture test: the plain-text
+    // parser below silently found nothing on valid JSON input, causing
+    // "No healthy replica in the pasted output" even when a STARTED
+    // replica was clearly present in the data — a real customer using
+    // ?format=json (a completely legitimate, common choice) would have
+    // gotten a falsely alarming finding.
+    if(trimmed.startsWith('[')){
+      try{
+        const arr = JSON.parse(trimmed);
+        if(Array.isArray(arr)){
+          arr.forEach(o=>{
+            if(o && o.index && o.shard && o.prirep){
+              rows.push({ index:String(o.index), shard:String(o.shard), type:o.prirep==='p'?'primary':'replica', state:o.state||'' });
+            }
+          });
+          if(rows.length) return rows;
+        }
+      }catch(e){ /* not valid JSON — fall through to text parsing below */ }
+    }
+    // typical _cat/shards?v row: "index shard prirep state docs store node"
     status.split('\n').forEach(line=>{
       const m = line.trim().match(/^(\S+)\s+(\d+)\s+([pr])\s+(\S+)/);
       if(m) rows.push({ index:m[1], shard:m[2], type:m[3]==='p'?'primary':'replica', state:m[4] });
@@ -2435,6 +2481,32 @@ FROM system.replicas WHERE is_readonly;</pre>`,
     });
   }
 
+  // Explicit "what exactly am I about to run this against" block, requested
+  // after review: the Incident Variables panel already substitutes
+  // namespace/pod/container into commands live, with unfilled placeholders
+  // visually flagged inline — but that's ambient (in the sidebar/inline in
+  // the command text), not a single, explicit confirmation a person can
+  // glance at before copying. This scans the SPECIFIC command (+ its
+  // prereq) for which placeholders it actually uses — not a generic
+  // "all 4 fields" check regardless of relevance — and shows exactly those,
+  // confirmed or not. Commands with no placeholders (pure read-only status
+  // checks with a fixed target) render nothing here.
+  const VAR_LABELS = { namespace:'Namespace', pod:'Pod', sts:'StatefulSet', container:'Container' };
+  function targetConfirmationHtml(r){
+    const combined = String(r.command||'') + ' ' + String(r.prereqCommand||'');
+    const usedKeys = VAR_TOKEN_MAP.filter(({keys}) => keys.some(k => combined.indexOf(k) !== -1)).map(v => v.varKey);
+    if(!usedKeys.length) return '';
+    const missing = usedKeys.filter(k => !(state.vars[k]||'').trim());
+    const rows = usedKeys.map(k=>{
+      const val = (state.vars[k]||'').trim();
+      return `<div class="target-row"><span class="target-label">${VAR_LABELS[k]}</span><span class="target-value ${val?'set':'unset'}">${val ? escapeHtml(val) : 'not set'}</span></div>`;
+    }).join('');
+    return `<div class="target-block ${missing.length?'incomplete':'confirmed'}" data-target-keys="${usedKeys.join(',')}">
+      <div class="target-head">${missing.length ? `⚠ Target not fully confirmed — ${missing.length} field${missing.length>1?'s':''} not set below` : '✓ Target confirmed'}</div>
+      <div class="target-rows">${rows}</div>
+    </div>`;
+  }
+
   function recCardHtml(r, idx, cmdPrefix){
     const cmdId = `${cmdPrefix}-${idx}`;
     const isDestructive = r.risk === 'destructive';
@@ -2495,6 +2567,7 @@ FROM system.replicas WHERE is_readonly;</pre>`,
       <div class="card rec">
         ${riskStamp(r.risk)}
         <h3>${r.title}${r.fromCustomRule ? '<span class="badge info">CUSTOM RULE</span>' : ''}</h3>
+        ${targetConfirmationHtml(r)}
         <div class="rec-section"><div class="rec-label">Prerequisites</div><p>${r.prereq}</p>
           ${r.prereqCommand ? `<pre class="cmd cmd-prereq" id="${cmdId}-prereq">${cmdTextHtml(r.prereqCommand)}<button class="copy-btn" data-copy="${cmdId}-prereq">copy</button></pre>` : ''}</div>
         <div class="rec-section"><div class="rec-label">Suggested command</div>

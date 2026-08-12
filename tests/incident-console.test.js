@@ -1718,6 +1718,107 @@ async function run() {
     });
   });
 
+  await suite('Fixture: real `_cat/shards?format=json` output (not just the ?v text table)', async () => {
+    // Found via a live fixture test after external review flagged the ES
+    // parser as text-only: a customer using ?format=json (a completely
+    // legitimate, common choice — arguably the more robust one to ask for)
+    // got a silent false alarm. parseEsShards found zero rows against valid
+    // JSON, so "Found a healthy replica" never fired even though a STARTED
+    // replica was clearly present in the data.
+    const { window, doc } = await loadDom();
+    const jsonShards = JSON.stringify([
+      { index:'orders', shard:'2', prirep:'p', state:'UNASSIGNED', docs:null, store:null, node:null },
+      { index:'orders', shard:'2', prirep:'r', state:'STARTED', docs:'18234', store:'212mb', node:'es-data-1' }
+    ]);
+    doc.getElementById('logsInput').value = '[ERROR][o.e.i.e.Engine] [orders][2] CorruptIndexException[checksum failed]';
+    doc.getElementById('statusInput').value = jsonShards;
+    click(doc.querySelector('#systemPicker button[data-val="elasticsearch"]'), window);
+    click(doc.getElementById('analyzeBtn'), window);
+    await wait(300);
+    await test('The healthy replica in the JSON is found (not "No healthy replica")', async () => {
+      const t = doc.getElementById('findingsList').textContent;
+      assertIncludes(t, 'Found a healthy replica');
+      assertNotIncludes(t, 'No healthy replica');
+    });
+  });
+
+  await suite('Fixture: malformed/truncated status output degrades safely', async () => {
+    // A customer's copy-paste can easily get cut off mid-command, or they
+    // paste something that LOOKS like JSON but isn't quite valid. The JSON
+    // branch in parseEsShards must fall through to the text parser (or to
+    // "no evidence") rather than throwing and breaking the whole analysis.
+    const { window, doc } = await loadDom();
+    doc.getElementById('logsInput').value = '[ERROR][o.e.i.e.Engine] [orders][2] CorruptIndexException[checksum failed]';
+    doc.getElementById('statusInput').value = '[{"index":"orders","shard":"2","prirep":"p","state":"UNASS'; // cut off mid-paste
+    click(doc.querySelector('#systemPicker button[data-val="elasticsearch"]'), window);
+    click(doc.getElementById('analyzeBtn'), window);
+    await wait(300);
+    await test('Analysis completes without throwing, findings still render', async () => {
+      assert(doc.getElementById('findingsList').children.length > 0 || doc.getElementById('findingsList').textContent.length > 0);
+    });
+    await test('Truncated/invalid JSON does not get misread as a confirmed healthy replica', async () => {
+      assertNotIncludes(doc.getElementById('findingsList').textContent, 'Found a healthy replica');
+    });
+  });
+
+  await suite('Fixture: a large real-shaped log (5000 lines, ~420KB) completes without hanging', async () => {
+    // Not the reviewer's suggested 100MB+ (impractical to ship as a test
+    // fixture and to keep the suite fast) — a large-but-realistic size
+    // that would already be well outside what a person pastes by hand,
+    // closer to what a "collect everything" script might produce.
+    const { window, doc } = await loadDom();
+    const lines = [];
+    for(let i=0;i<5000;i++) lines.push(`[2026-08-12T10:${String(i%60).padStart(2,'0')}:00,000][INFO ][o.e.i.e.Engine] [es-data-0] routine flush cycle ${i}`);
+    lines[2500] = '[2026-08-12T10:41:00,000][ERROR][o.e.i.e.Engine] [orders][2] CorruptIndexException[checksum failed (hardware problem?)]';
+    doc.getElementById('logsInput').value = lines.join('\n');
+    click(doc.querySelector('#systemPicker button[data-val="elasticsearch"]'), window);
+    const start = Date.now();
+    click(doc.getElementById('analyzeBtn'), window);
+    await wait(2000);
+    await test('The corruption line buried at line 2501 of 5000 is still found', async () => {
+      assertIncludes(doc.getElementById('findingsList').textContent, 'segment corruption');
+    });
+    await test('Completes in well under 10s (no catastrophic slowdown on realistic large input)', async () => {
+      assert(Date.now() - start < 10000);
+    });
+  });
+
+  await suite('Target confirmation block shows exactly which fields THIS command needs', async () => {
+    // Requested after external review: an explicit "what am I about to run
+    // this against" block, distinct from the ambient inline highlighting
+    // already in the command text — scans the specific command (+its
+    // prereq) for which placeholders it actually references, not a blanket
+    // "all 4 fields" check regardless of relevance.
+    const { window, doc } = await loadDom();
+    doc.getElementById('logsInput').value = 'Reason: OOMKilled\nExit Code: 137';
+    doc.getElementById('statusInput').value = 'Backend: degraded\nVersion: 3.319.465-0';
+    click(doc.querySelector('#systemPicker button[data-val="instana"]'), window);
+    click(doc.getElementById('analyzeBtn'), window);
+    await wait(300);
+    click(doc.querySelector('.tab[data-tab="preporuke"]'), window);
+
+    await test('Before filling variables, the block shows "not fully confirmed" with unset fields', async () => {
+      const block = doc.querySelector('.target-block');
+      assert(block, 'expected a target confirmation block on a command with placeholders');
+      assert(block.classList.contains('incomplete'));
+      assertIncludes(block.textContent, 'not fully confirmed');
+      assertIncludes(block.textContent, 'not set');
+    });
+    await test('Filling Namespace and Pod live-updates the block without re-analyzing', async () => {
+      const ns = doc.getElementById('var-namespace');
+      ns.value = 'instana-datastore';
+      ns.dispatchEvent(new window.Event('input', { bubbles: true }));
+      const pod = doc.getElementById('var-pod');
+      pod.value = 'ch-shard1-0';
+      pod.dispatchEvent(new window.Event('input', { bubbles: true }));
+      const block = doc.querySelector('.target-block');
+      assertIncludes(block.textContent, 'instana-datastore');
+      assertIncludes(block.textContent, 'ch-shard1-0');
+      // Still incomplete — this command also needs container/statefulset
+      assert(block.classList.contains('incomplete'));
+    });
+  });
+
   await suite('Incident variables fill placeholders live in every command', async () => {
     const { window, doc } = await loadDom();
     // Needs a recommendation with a <namespace>/<pod-name> placeholder —
