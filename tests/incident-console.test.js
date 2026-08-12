@@ -935,6 +935,49 @@ async function run() {
     });
   });
 
+  await suite('Kubernetes layer — bare "get pods" READY/RESTARTS numbers catch instability with no literal status phrase', async () => {
+    // Found via a live simulation: a customer pasted only a raw `kubectl
+    // get pods` row — "kafka-broker-2   0/1   Running   15   6h" — with
+    // none of the literal phrases (CrashLoopBackOff, OOMKilled, etc.)
+    // every other check here looks for. STATUS said "Running" (true in the
+    // gap between crash-loop restarts), so nothing fired and the verdict
+    // came back "Stable — you have time. No critical findings detected." —
+    // actively dangerous with READY 0/1 and 15 restarts sitting right
+    // there in the same line.
+    const { window, doc } = await loadDom();
+    doc.getElementById('logsInput').value = 'kafka-broker-2   0/1   Running   15   6h';
+    click(doc.getElementById('analyzeBtn'), window);
+    await wait(300);
+    await test('An instability finding fires from the READY/RESTARTS numbers alone', async () => {
+      const t = doc.getElementById('findingsList').textContent;
+      assertIncludes(t, 'unstable');
+      assertIncludes(t, '0/1');
+      assertIncludes(t, '15 restarts');
+    });
+    await test('The verdict no longer reads as an unqualified "no critical findings" — it names the warning', async () => {
+      const t = doc.getElementById('verdictBannerWrap').textContent;
+      assertIncludes(t, 'warning');
+    });
+    await test('A read-only follow-up recommendation is offered (logs/describe/events)', async () => {
+      click(doc.querySelector('.tab[data-tab="preporuke"]'), window);
+      assertIncludes(doc.getElementById('recsList').textContent, 'READY/RESTARTS');
+    });
+  });
+
+  await suite('Kubernetes layer — unstable-pod finding stays quiet once a more specific cause is already known', async () => {
+    const { window, doc } = await loadDom();
+    // Same READY/RESTARTS numbers, but now WITH a specific cause present
+    // (Evicted) — the generic "looks unstable" finding should not also
+    // fire and duplicate/dilute the more specific, more useful finding.
+    doc.getElementById('logsInput').value =
+      'kafka-broker-2   0/1   Running   15   6h\nWarning  Evicted  9m  kubelet  The node was low on resource: ephemeral-storage.';
+    click(doc.getElementById('analyzeBtn'), window);
+    await wait(300);
+    await test('No redundant "looks unstable" finding when Evicted already explains it', async () => {
+      assertNotIncludes(doc.getElementById('findingsList').textContent, 'looks unstable');
+    });
+  });
+
   await suite('Kubernetes layer — no false positives on a clean datastore-only incident', async () => {
     const { window, doc } = await loadDom();
     doc.getElementById('logsInput').value = '[ERROR] CorruptIndexException: checksum failed for segment_2.cfs';
@@ -1355,6 +1398,29 @@ async function run() {
       cb.checked = true;
       cb.dispatchEvent(new window.Event('change', { bubbles: true }));
       assertEqual(cb.checked, false, 'the checkbox must revert — a blocked action was never actually run');
+    });
+  });
+
+  await suite('Version evidence requires an actual value, not just the bare word "version"', async () => {
+    // Third instance of the same bug class: "Version: unknown" contains
+    // the word "version" and used to count as version evidence present.
+    async function analyzeWith(status){
+      const { window, doc } = await loadDom();
+      doc.getElementById('logsInput').value = 'Reason: OOMKilled\nExit Code: 137';
+      doc.getElementById('statusInput').value = status;
+      click(doc.querySelector('#systemPicker button[data-val="instana"]'), window);
+      click(doc.getElementById('analyzeBtn'), window);
+      await wait(300);
+      click(doc.querySelector('.tab[data-tab="preporuke"]'), window);
+      return (doc.querySelector('.missing-evidence')||{}).textContent || '';
+    }
+    await test('"Version: unknown" still blocks on missing version evidence', async () => {
+      const missing = await analyzeWith('Backend: degraded\nVersion: unknown (customer could not tell us)');
+      assertIncludes(missing, 'version');
+    });
+    await test('An actual version number satisfies it', async () => {
+      const missing = await analyzeWith('Backend: degraded\nVersion: 3.319.465-0');
+      assertNotIncludes(missing, 'version');
     });
   });
 

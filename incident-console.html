@@ -1573,6 +1573,34 @@ FROM system.replicas WHERE is_readonly;</pre>`,
     const hasVolumeIssue = /FailedMount|FailedAttachVolume|MountVolume\.SetUp failed|persistentvolumeclaim.{0,40}(not found|Pending)/i.test(text);
     const hasProbeKill = /(Liveness|Readiness|Startup) probe failed/i.test(text);
     const hasNodePressure = /DiskPressure|MemoryPressure|node.{0,20}NotReady|NodeNotReady/i.test(text);
+    const hasAnySpecificK8sSignal = hasCrashLoop||hasOOMKilled||hasEvicted||hasImagePull||hasVolumeIssue||hasProbeKill||hasNodePressure;
+
+    // Found via a live simulation: a customer pasted a bare `kubectl get
+    // pods` row — "kafka-broker-2   0/1   Running   15   6h" — with none of
+    // the literal phrases above (STATUS says "Running", not
+    // "CrashLoopBackOff"). Every check here is a plain substring test, so
+    // this slipped through entirely, and the verdict came back "✓ Stable —
+    // you have time. No critical findings detected." — actively dangerous:
+    // READY 0/1 (not all containers ready) with 15 restarts is a textbook
+    // instability signal any engineer would flag on sight, and STATUS
+    // legitimately can say "Running" in the gap between crash-loop
+    // restarts. This parses the actual READY/RESTARTS columns instead of
+    // pattern-matching known phrases, so a paste with none of the specific
+    // signals above still can't read as "nothing wrong here".
+    let unstablePodLine = null;
+    if(!hasAnySpecificK8sSignal){
+      for(const line of text.split('\n')){
+        const m = line.match(/^(\S[\w.-]*)\s+(\d+)\/(\d+)\s+(\S+)\s+(\d+)\b/);
+        if(!m) continue;
+        const [, podName, readyNum, readyDenom, statusWord, restarts] = m;
+        const notReady = parseInt(readyNum, 10) < parseInt(readyDenom, 10);
+        const manyRestarts = parseInt(restarts, 10) >= 3;
+        if(notReady || manyRestarts){
+          unstablePodLine = { podName, readyNum, readyDenom, statusWord, restarts, line: line.trim(), notReady, manyRestarts };
+          break;
+        }
+      }
+    }
 
     if(hasCrashLoop) findings.push({ sev:'danger', confidence:'high', title:'Pod is in CrashLoopBackOff',
       note:'Kubernetes keeps restarting the container and it keeps dying. The reason is in the container\'s LAST run — see the recommendation below for how to get it.',
@@ -1595,6 +1623,14 @@ FROM system.replicas WHERE is_readonly;</pre>`,
     if(hasNodePressure) findings.push({ sev:'danger', confidence:'medium', title:'Node under pressure / NotReady',
       note:'The underlying node has a problem (disk/memory pressure or NotReady). Fixing the pod won\'t help until the node is healthy.',
       evidence: findEvidence(/DiskPressure|MemoryPressure|NotReady/i, text) });
+    if(unstablePodLine){
+      const reasons = [];
+      if(unstablePodLine.notReady) reasons.push(`READY ${unstablePodLine.readyNum}/${unstablePodLine.readyDenom} (not all containers ready)`);
+      if(unstablePodLine.manyRestarts) reasons.push(`${unstablePodLine.restarts} restarts`);
+      findings.push({ sev:'warn', confidence:'medium', title:`Pod looks unstable despite STATUS="${unstablePodLine.statusWord}"`,
+        note:`A bare "get pods" line (${reasons.join(', ')}) isn't enough to rule anything out — STATUS can legitimately say "${unstablePodLine.statusWord}" in the gap between crash-loop restarts. Do NOT read this as "nothing wrong" — request logs, describe, and events before treating this as stable.`,
+        evidence: unstablePodLine.line });
+    }
 
     // --- Recommendations (pod-level layer comes FIRST: the pod must be able
     // to run before any datastore-internal fix can even be attempted) ---
@@ -1605,6 +1641,13 @@ FROM system.replicas WHERE is_readonly;</pre>`,
       prereqCommand:'kubectl -n <namespace> describe pod <pod-name>',
       command:'kubectl -n <namespace> logs <pod-name> --previous --tail=300',
       consequence:'No risk — read-only. "describe" shows the Kubernetes-level reason (OOMKilled/probe/volume), "--previous" shows what the container itself said before dying. Paste both back into this tool.' });
+    if(unstablePodLine) recs.push({ risk:'safe',
+      title:'Get the real cause behind the unstable READY/RESTARTS count',
+      docLink:'https://kubernetes.io/docs/tasks/debug/debug-application/debug-running-pod/',
+      prereq:'None — all three commands are read-only.',
+      prereqCommand:'kubectl -n <namespace> describe pod <pod-name>',
+      command:'kubectl -n <namespace> logs <pod-name> --previous --tail=300\nkubectl -n <namespace> get events --sort-by=.lastTimestamp | tail -40',
+      consequence:'No risk — read-only. A "get pods" line alone can\'t tell you WHY it\'s restarting; these three show the actual reason (OOMKilled, probe failure, app crash, etc). Paste the output back into this tool.' });
     if(hasOOMKilled) recs.push({ risk:'moderate',
       title:'Raise the container memory limit',
       docLink:'https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/',
@@ -1642,7 +1685,7 @@ FROM system.replicas WHERE is_readonly;</pre>`,
       consequence:'The pod is recreated once with the new probe config, then gets much longer before Kubernetes considers it dead — letting a long recovery actually FINISH instead of being killed at 90%. Trade-off: a genuinely hung pod will also take longer to be restarted. Revert after the incident.' });
 
     return { findings, recs,
-      hasAnySignal: hasCrashLoop||hasOOMKilled||hasEvicted||hasImagePull||hasVolumeIssue||hasProbeKill||hasNodePressure };
+      hasAnySignal: hasCrashLoop||hasOOMKilled||hasEvicted||hasImagePull||hasVolumeIssue||hasProbeKill||hasNodePressure||!!unstablePodLine };
   }
 
   // ============================================================
@@ -3919,7 +3962,17 @@ ${dangers.length ? `Open critical issue${dangers.length>1?'s':''}: ${dangers.map
     const backupEvidence = evaluateBackupEvidence(status, logs);
     const replicaEvidence = evaluateReplicaEvidence(status);
     const replicaLabel = REPLICA_EVIDENCE_LABEL[system] || 'replica/ISR/shard health';
-    const hasVersionSignal = /version|stanctl\s+.*\d+\.\d+|elasticsearch\s+\d|clickhouse\s+\d|kafka\s+\d/i.test(String(status||'') + '\n' + String(logs||''));
+    // Same bug class again, third spot: `/version|.../i.test(...)` treated
+    // "Version: unknown" as version evidence PRESENT, purely because the
+    // word "version" appears — even though it explicitly says the version
+    // is NOT known. Lower stakes than replica/backup (this only affects
+    // escalation context, not a data-loss gate), but the same fix pattern:
+    // require an actual value (a real N.N version number, or one of the
+    // known product-name+digit forms) rather than a bare keyword, and
+    // explicitly reject "unknown/n/a/tbd" right after the word "version".
+    const versionText = String(status||'') + '\n' + String(logs||'');
+    const hasVersionSignal = !/\bversion\b[^\n.;]{0,20}\b(unknown|n\/a|not\s+available|not\s+known|tbd)\b/i.test(versionText)
+      && /\d+\.\d+(\.\d+)?|stanctl\s+.*\d+\.\d+|elasticsearch\s+\d|clickhouse\s+\d|kafka\s+\d/i.test(versionText);
     return (recs||[]).map(r=>{
       const command = String(r.command||'');
       const mutating = /\b(patch|delete|drop|detach|attach|restart|reroute|restore|remove-corrupted|alter|system\s+restart|--execute|--alter|scale)\b/i.test(command);
