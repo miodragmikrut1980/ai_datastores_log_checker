@@ -2965,7 +2965,7 @@ FROM system.replicas WHERE is_readonly;</pre>`,
 
   function toMarkdown(a){
     let md = `# Incident report ${a.id}\n\n**System:** ${a.system.toUpperCase()}  \n**Time:** ${a.timestamp}\n\n## Findings\n\n`;
-    a.findings.forEach(f=> md += `- **[${f.sev.toUpperCase()}]** ${f.title} — ${f.note}${f.evidence ? `\n  > \`${f.evidence}\`` : ''}\n`);
+    a.findings.forEach(f=> md += `- **[${f.sev.toUpperCase()}]** ${f.title} — ${f.note}${f.evidence ? `\n  > \`${evidencePlainText(f.evidence)}\`` : ''}\n`);
     md += `\n## Immediate actions\n\n`;
     a.recs.forEach((r,i)=>{
       md += `### ${i+1}. ${r.title} (${r.risk.toUpperCase()}) ${r.done?'✅':'⬜'}${r.assignee?` — assignee: ${r.assignee}`:''}\n\n`;
@@ -2989,7 +2989,7 @@ FROM system.replicas WHERE is_readonly;</pre>`,
     return `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>${a.id}</title>${style}</head>
       <body style="padding:24px">
       <h2 style="font-family:var(--mono)">Incident report ${a.id} — ${a.system.toUpperCase()} (${a.timestamp})</h2>
-      <div class="card"><h3>Findings</h3>${a.findings.map(f=>`<div class="finding-row"><div class="dot ${f.sev}"></div><div class="finding-text"><b>${f.title}${sevBadge(f.sev)}${confBadge(f.confidence)}</b><span>${f.note}</span>${f.evidence?`<span class="evidence-quote">"${escapeHtml(f.evidence)}"</span>`:''}</div></div>`).join('')}</div>
+      <div class="card"><h3>Findings</h3>${a.findings.map(f=>`<div class="finding-row"><div class="dot ${f.sev}"></div><div class="finding-text"><b>${f.title}${sevBadge(f.sev)}${confBadge(f.confidence)}</b><span>${f.note}</span>${f.evidence?`<span class="evidence-quote">"${escapeHtml(evidencePlainText(f.evidence))}"</span>`:''}</div></div>`).join('')}</div>
       <h3 class="section-h">Immediate actions</h3>
       ${a.recs.map(r=>`<div class="card rec">${riskStamp(r.risk)}<h3>${r.title} ${r.done?'✅':''}</h3>
         <div class="rec-section"><div class="rec-label">Prerequisites</div><p>${r.prereq}</p></div>
@@ -3659,7 +3659,7 @@ Support`;
     if(dangers.length){
       dangers.forEach(f=>{
         md += `- **${f.title}** — ${f.note}\n`;
-        if(f.evidence) md += `  \`\`\`\n  ${f.evidence}\n  \`\`\`\n`;
+        if(f.evidence) md += `  \`\`\`\n  ${evidencePlainText(f.evidence)}\n  \`\`\`\n`;
       });
       if(a.flags && a.flags.hasK8sIssue) md += `\nNote: pod-layer (Kubernetes) signals were present — check whether the pod-level event (OOMKill/eviction/probe) *caused* the datastore-level damage before naming a root cause.\n`;
     } else {

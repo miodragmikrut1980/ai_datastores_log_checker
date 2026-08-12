@@ -1200,6 +1200,51 @@ async function run() {
     });
   });
 
+  await suite('Evidence highlight sentinel characters never leak into human-readable exports', async () => {
+    // Found via a live simulation: findEvidence() embeds \u0001/\u0002
+    // sentinels around the matched substring so the live UI can render a
+    // <mark> highlight (see renderEvidenceHtml). Four export paths quoted
+    // f.evidence directly without stripping them first — Markdown export,
+    // HTML export, and the postmortem generator all had literal U+0001/
+    // U+0002 control characters embedded in the quoted log line, which
+    // would show as garbled/invisible junk when pasted into Confluence,
+    // Notion, or a text editor. (JSON/Handover correctly keep the
+    // sentinels — those need them to re-render highlighting after import.)
+    const { window, doc } = await loadDom();
+    click(doc.querySelector('#sampleLinks button[data-s="clickhouse"]'), window);
+    click(doc.getElementById('analyzeBtn'), window);
+    await wait(300);
+    click(doc.querySelector('.tab[data-tab="preporuke"]'), window);
+    const hasSentinel = s => /[\u0001\u0002]/.test(s);
+
+    await test('Ticket text has no sentinel characters', async () => {
+      click(doc.getElementById('ticketBtn'), window);
+      await wait(50);
+      assert(!hasSentinel(doc.getElementById('modalWrap').textContent));
+      click(doc.getElementById('modalClose'), window);
+    });
+    await test('Postmortem draft has no sentinel characters', async () => {
+      click(doc.getElementById('postmortemBtn'), window);
+      await wait(50);
+      assert(!hasSentinel(doc.getElementById('modalWrap').textContent));
+      click(doc.getElementById('modalClose'), window);
+    });
+    await test('Export Markdown output has no sentinel characters', async () => {
+      let captured = null;
+      window.URL.createObjectURL = (blob) => {
+        const r = new window.FileReader();
+        r.onload = () => { captured = String(r.result); };
+        r.readAsText(blob);
+        return 'blob:captured';
+      };
+      window.URL.revokeObjectURL = () => {};
+      click(doc.getElementById('exportMd'), window);
+      await wait(100);
+      assert(captured, 'expected the markdown export to have been captured');
+      assert(!hasSentinel(captured));
+    });
+  });
+
   await suite('Postmortem generator', async () => {
     const { window, doc } = await loadDom();
     click(doc.querySelector('#sampleLinks button[data-s="elasticsearch"]'), window);
