@@ -1,6 +1,6 @@
 {
   "name": "incident-console-tests",
-  "version": "1.3.2",
+  "version": "1.3.4",
   "private": true,
   "description": "Test suite za Incident Console (incident-console.html) i companion-server.js",
   "scripts": {

@@ -310,7 +310,7 @@ async function run() {
 
   await suite('Redacting sensitive data before export', async () => {
     const { window, doc } = await loadDom();
-    doc.getElementById('logsInput').value = 'ERROR from 10.0.0.42 contact admin@example.com token: abc123XYZsecret ERROR again Exception at Foo.bar';
+    doc.getElementById('logsInput').value = 'ERROR from 10.0.0.42 contact admin@example.com token: abc123XYZsecret Authorization: Bearer bearerSecret123 eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJzdXBwb3J0In0.signature123456 https://admin:secretPass@cluster.local ERROR again Exception at Foo.bar';
     doc.getElementById('statusInput').value = 'myindex 0 p STARTED';
     click(doc.querySelector('#systemPicker button[data-val="elasticsearch"]'), window);
     click(doc.getElementById('analyzeBtn'), window);
@@ -327,6 +327,9 @@ async function run() {
       assertNotIncludes(data.rawLogs, '10.0.0.42');
       assertIncludes(data.rawLogs, '[IP-REDACTED]');
       assertNotIncludes(data.rawLogs, 'admin@example.com');
+      assertNotIncludes(data.rawLogs, 'bearerSecret123');
+      assertNotIncludes(data.rawLogs, 'eyJhbGciOiJIUzI1NiJ9');
+      assertNotIncludes(data.rawLogs, 'secretPass');
     });
 
     await test('With redaction off, raw data stays in the export', async () => {
@@ -358,6 +361,22 @@ async function run() {
     });
     await test('A generic filename is classified by content sniffing (2+ ERROR/Exception -> logs)', async () => {
       assertIncludes(doc.getElementById('logsInput').value, 'random-notes.txt');
+    });
+  });
+
+  await suite('File upload — oversized incident bundles are rejected before reading', async () => {
+    const { window, doc } = await loadDom();
+    patchFileReader(window);
+    const fileInput = doc.getElementById('fileInput');
+    Object.defineProperty(fileInput, 'files', {
+      value: [new FakeFile('full-support-bundle.log', 'not actually allocated', 26 * 1024 * 1024)],
+      writable: true
+    });
+    change(fileInput, window);
+    await wait(30);
+    await test('A file over 25 MB is not loaded and the engineer gets an actionable message', async () => {
+      assertEqual(doc.getElementById('logsInput').value, '');
+      assertIncludes([...doc.querySelectorAll('.toast')].map(t=>t.textContent).join(' '), 'larger than 25 MB');
     });
   });
 
@@ -1739,6 +1758,24 @@ async function run() {
       const t = doc.getElementById('findingsList').textContent;
       assertIncludes(t, 'Found a healthy replica');
       assertNotIncludes(t, 'No healthy replica');
+    });
+  });
+
+  await suite('Fixture: companion ES health + labelled shards JSON response', async () => {
+    const { window, doc } = await loadDom();
+    doc.getElementById('logsInput').value = '[ERROR][o.e.i.e.Engine] [orders][2] CorruptIndexException[checksum failed]';
+    doc.getElementById('statusInput').value =
+      '----- _cluster/health JSON -----\n{"status":"yellow","number_of_nodes":2}\n' +
+      '----- _cat/shards JSON -----\n' + JSON.stringify([
+        { index:'orders', shard:'2', prirep:'p', state:'UNASSIGNED', node:null },
+        { index:'orders', shard:'2', prirep:'r', state:'STARTED', node:'es-data-1' }
+      ]);
+    click(doc.querySelector('#systemPicker button[data-val="elasticsearch"]'), window);
+    click(doc.getElementById('analyzeBtn'), window);
+    await wait(300);
+    await test('The embedded JSON section is parsed and the healthy replica is recognized', async () => {
+      assertIncludes(doc.getElementById('findingsList').textContent, 'Found a healthy replica');
+      assertNotIncludes(doc.getElementById('findingsList').textContent, 'No healthy replica');
     });
   });
 

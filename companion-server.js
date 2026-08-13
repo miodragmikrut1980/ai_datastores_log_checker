@@ -147,10 +147,10 @@ async function fetchStatus(namespace, pod, type) {
   }
   if (type === 'elasticsearch') {
     const [health, shards] = await Promise.all([
-      runKubectl(['exec', pod, '-n', namespace, '--', 'curl', '-s', 'localhost:9200/_cluster/health?pretty']),
-      runKubectl(['exec', pod, '-n', namespace, '--', 'curl', '-s', 'localhost:9200/_cat/shards?v']),
+      runKubectl(['exec', pod, '-n', namespace, '--', 'curl', '-s', 'localhost:9200/_cluster/health?level=indices&format=json']),
+      runKubectl(['exec', pod, '-n', namespace, '--', 'curl', '-s', 'localhost:9200/_cat/shards?format=json']),
     ]);
-    return `----- _cluster/health -----\n${health}\n----- _cat/shards?v -----\n${shards}`;
+    return `----- _cluster/health JSON -----\n${health}\n----- _cat/shards JSON -----\n${shards}`;
   }
   if (type === 'clickhouse') {
     // FORMAT JSON (not PrettyCompact) so the frontend can parse structured
@@ -214,6 +214,10 @@ function setCors(res) {
   res.setHeader('Access-Control-Allow-Origin', 'null');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Companion-Token');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  // Incident evidence can contain customer topology, pod names and log
+  // fragments. Never let a browser/proxy cache these local API responses.
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
 }
 
 function sendJson(res, code, obj) {

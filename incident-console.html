@@ -1222,6 +1222,9 @@ kubectl logs &lt;pod&gt;
     out = out.replace(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g, '[EMAIL-REDACTED]');
     out = out.replace(/\bAKIA[0-9A-Z]{16}\b/g, '[AWS-KEY-REDACTED]');
     out = out.replace(/\b((?:api[_-]?key|token|secret|password|passwd)\s*[:=]\s*)([^\s,;]{4,})/gi, '$1[REDACTED]');
+    out = out.replace(/\b(Authorization\s*:\s*Bearer\s+)[A-Za-z0-9._~+/=-]+/gi, '$1[REDACTED]');
+    out = out.replace(/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g, '[REDACTED_JWT]');
+    out = out.replace(/\b(https?:\/\/)([^\s/@:]+):([^\s/@]+)@/gi, '$1[REDACTED]@');
     out = out.replace(/\bBearer\s+[A-Za-z0-9\-_.]{10,}\b/g, 'Bearer [REDACTED]');
     return out;
   }
@@ -1245,6 +1248,8 @@ kubectl logs &lt;pod&gt;
   // ============================================================
   const LOG_FILENAME_RE = /log|previous|current/i;
   const STATUS_FILENAME_RE = /health|shard|part|repl|topic|describe|allocation|corruption/i;
+  const MAX_UPLOAD_FILE_BYTES = 25 * 1024 * 1024;
+  const MAX_UPLOAD_TOTAL_BYTES = 50 * 1024 * 1024;
 
   function contentLooksLikeLog(text){
     const hits = (text.match(/\b(ERROR|WARN|Exception|at [a-zA-Z0-9_.]+\(|CorruptIndexException|CorruptRecordException)\b/g) || []).length;
@@ -1274,6 +1279,16 @@ kubectl logs &lt;pod&gt;
 
   function handleFiles(fileList){
     const files = Array.from(fileList);
+    const oversized = files.find(file=>Number(file.size||0) > MAX_UPLOAD_FILE_BYTES);
+    const totalBytes = files.reduce((sum,file)=>sum + Number(file.size||0), 0);
+    if(oversized){
+      toast(`File "${oversized.name}" is larger than 25 MB — trim it to the incident window before loading.`);
+      return;
+    }
+    if(totalBytes > MAX_UPLOAD_TOTAL_BYTES){
+      toast('Selected files exceed 50 MB total — load only the incident time window.');
+      return;
+    }
     let count = 0;
     files.forEach(file=>{
       const reader = new FileReader();
@@ -1315,10 +1330,16 @@ kubectl logs &lt;pod&gt;
     const base = `http://127.0.0.1:${port}`;
     const btn = document.getElementById('companionFetchBtn');
     btn.disabled = true; btn.textContent = 'Fetching...';
+    // An Instana bundle runs in bounded batches and can legitimately take
+    // close to 45s. Give it enough time, but never leave an on-call engineer
+    // staring at a permanently disabled Fetch button if the local server or
+    // kubectl connection hangs unexpectedly.
+    const controller = new AbortController();
+    const fetchTimeout = setTimeout(()=>controller.abort(), 50000);
     try{
       const [logsRes, statusRes] = await Promise.all([
-        fetch(`${base}/logs?namespace=${encodeURIComponent(namespace)}&pod=${encodeURIComponent(pod)}`, { headers: { 'X-Companion-Token': token } }),
-        fetch(`${base}/${type === 'instana' ? 'instana/bundle' : 'status'}?namespace=${encodeURIComponent(namespace)}&pod=${encodeURIComponent(pod)}&type=${encodeURIComponent(type)}`, { headers: { 'X-Companion-Token': token } })
+        fetch(`${base}/logs?namespace=${encodeURIComponent(namespace)}&pod=${encodeURIComponent(pod)}`, { signal:controller.signal, headers: { 'X-Companion-Token': token } }),
+        fetch(`${base}/${type === 'instana' ? 'instana/bundle' : 'status'}?namespace=${encodeURIComponent(namespace)}&pod=${encodeURIComponent(pod)}&type=${encodeURIComponent(type)}`, { signal:controller.signal, headers: { 'X-Companion-Token': token } })
       ]);
       if(!logsRes.ok || (statusRes.status >= 400 && statusRes.status !== 207)){
         const errBody = !logsRes.ok ? await logsRes.json().catch(()=>({})) : await statusRes.json().catch(()=>({}));
@@ -1335,8 +1356,11 @@ kubectl logs &lt;pod&gt;
         toast('Data automatically fetched from the companion server');
       }
     }catch(err){
-      toast('Companion server unreachable at ' + base + ' — run node companion-server.js and try again.');
+      toast(err && err.name === 'AbortError'
+        ? 'Companion fetch timed out after 50 seconds — check kubectl connectivity and retry.'
+        : 'Companion server unreachable at ' + base + ' — run node companion-server.js and try again.');
     }finally{
+      clearTimeout(fetchTimeout);
       btn.disabled = false; btn.textContent = 'Fetch automatically';
     }
   });
@@ -1626,9 +1650,14 @@ FROM system.replicas WHERE is_readonly FORMAT JSON;</pre>`,
     // replica was clearly present in the data — a real customer using
     // ?format=json (a completely legitimate, common choice) would have
     // gotten a falsely alarming finding.
-    if(trimmed.startsWith('[')){
+    // The companion response contains health JSON followed by a labelled
+    // shards JSON section, so extract that section before parsing. Directly
+    // pasted `_cat/shards?format=json` arrays continue to work unchanged.
+    const sectionMatch = trimmed.match(/-----\s*_cat\/shards[^\n]*-----\s*\n([\s\S]*?)(?=\n-----|$)/i);
+    const jsonCandidate = sectionMatch ? sectionMatch[1].trim() : trimmed;
+    if(jsonCandidate.startsWith('[')){
       try{
-        const arr = JSON.parse(trimmed);
+        const arr = JSON.parse(jsonCandidate);
         if(Array.isArray(arr)){
           arr.forEach(o=>{
             if(o && o.index && o.shard && o.prirep){

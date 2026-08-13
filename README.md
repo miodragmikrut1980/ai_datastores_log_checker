@@ -1,5 +1,24 @@
 # Incident Toolkit — Instana / ES / ClickHouse / Kafka
 
+## Version 1.3.4 — large-bundle and secret-redaction hardening
+
+- Browser uploads are bounded to 25 MB per file and 50 MB per selection, with
+  an actionable message to trim logs to the incident window instead of risking
+  an unresponsive on-call UI.
+- Export redaction now also covers bearer tokens, JWTs, and passwords embedded
+  in URLs.
+- Release archives are clean source distributions: no `node_modules`, macOS
+  metadata, or already-applied patch files.
+
+## Version 1.3.3 — JSON-first Elasticsearch and companion hardening
+
+- The companion server now requests structured Elasticsearch cluster/shard
+  JSON, and the UI safely parses the labelled combined response.
+- Companion auto-fetch aborts after 50 seconds instead of leaving the incident
+  UI indefinitely disabled when kubectl or the local server hangs.
+- Local incident-evidence responses use `Cache-Control: no-store` and
+  `X-Content-Type-Options: nosniff`.
+
 ## Version 1.3.2 — urgent ClickHouse severity corrections
 
 - An active ClickHouse readonly replica is now critical because writes may be
@@ -397,13 +416,13 @@ npm run test:accessibility
 npm run test:e2e             # real headless-Chrome checks — needs a local Chrome/Chromium, see tests/e2e.test.js
 ```
 
-As of v1.3.2 the automated verification gate contains 261 tests total:
-252 jsdom/integration tests (214 UI + 15 companion-server + 14 security + 9
+As of v1.3.4 the automated verification gate contains 264 tests total:
+255 jsdom/integration tests (216 UI + 16 companion-server + 14 security + 9
 accessibility) and 9 real-browser E2E tests. GitHub Actions installs Chrome and
 runs both `npm test` and `npm run test:e2e` on every push and pull request.
 
 The test suite covers (`tests/`):
-- `incident-console.test.js` — 214 tests against `incident-console.html` via jsdom:
+- `incident-console.test.js` — 216 tests against `incident-console.html` via jsdom:
   analysis for all 3 systems, table parsing, checklist/progress, timeline,
   JSON/ECS logs, diff comparison, custom rules (including the ReDoS warning),
   redacting sensitive data, upload/auto-classification of files, history, export,

@@ -63,6 +63,12 @@ async function run() {
       assertEqual(res.headers['access-control-allow-origin'], 'null');
     });
 
+    await test('Incident evidence responses are not cacheable and disable MIME sniffing', async () => {
+      const res = await httpGet(`http://127.0.0.1:${PORT}/health`);
+      assertEqual(res.headers['cache-control'], 'no-store');
+      assertEqual(res.headers['x-content-type-options'], 'nosniff');
+    });
+
     await test('A request without a token returns 401', async () => {
       const res = await httpGet(`http://127.0.0.1:${PORT}/logs?namespace=production&pod=es-data-0`);
       assertEqual(res.status, 401);
@@ -93,6 +99,7 @@ async function run() {
       const data = JSON.parse(res.body);
       assertIncludes(data.text, '_cluster/health');
       assertIncludes(data.text, '_cat/shards');
+      assertIncludes(data.text, 'format=json');
     });
 
     await test('/status for clickhouse calls clickhouse-client with 3 queries', async () => {

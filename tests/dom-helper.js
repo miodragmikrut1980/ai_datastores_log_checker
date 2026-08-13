@@ -55,7 +55,7 @@ async function wait(ms) { return new Promise(r => setTimeout(r, ms)); }
 // doesn't work with real Blob/File constructors on Node without extra
 // polyfills, so we use a lightweight mock + a FileReader patch instead.
 class FakeFile {
-  constructor(name, content) { this.name = name; this._content = content; }
+  constructor(name, content, size) { this.name = name; this._content = content; this.size = size === undefined ? Buffer.byteLength(content) : size; }
 }
 function patchFileReader(window) {
   window.FileReader = class {
