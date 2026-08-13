@@ -98,11 +98,20 @@ async function run() {
       const rects = await page.evaluate(() => {
         const vs = document.getElementById('verdictStickyWrap');
         const qa = document.getElementById('quickActions');
-        const r = el => el ? el.getBoundingClientRect() : null;
+        // Puppeteer's page.evaluate() serializes the return value over CDP;
+        // DOMRect's width/height/top/etc. are prototype accessors, not own
+        // enumerable properties, so a raw DOMRect returned inside a plain
+        // object can silently lose fields in transit. Destructure into a
+        // plain object explicitly so every field survives serialization.
+        const plainRect = el => {
+          if (!el) return null;
+          const r = el.getBoundingClientRect();
+          return { width: r.width, height: r.height, top: r.top, left: r.left, right: r.right, bottom: r.bottom };
+        };
         return {
           vsVisible: vs ? vs.classList.contains('vs-visible') : false,
-          vs: r(vs),
-          qa: r(qa),
+          vs: plainRect(vs),
+          qa: plainRect(qa),
           qaTop: qa ? qa.style.top : null,
         };
       });
@@ -126,7 +135,12 @@ async function run() {
 
     await suite('Modal dialog on a real mobile viewport (390x844, iPhone-sized)', async () => {
       const page = await browser.newPage();
-      await loadAndAnalyze(page, { viewport: { width: 390, height: 844, isMobile: true, hasTouch: true } });
+      // A plain narrow viewport (not full isMobile/hasTouch emulation) —
+      // that combination has historically produced inconsistent
+      // window.innerWidth across Chrome versions/platforms; a fixed-size
+      // viewport with deviceScaleFactor:1 gives a deterministic 390px
+      // layout viewport, which is what this test actually needs to check.
+      await loadAndAnalyze(page, { viewport: { width: 390, height: 844, deviceScaleFactor: 1 } });
 
       await page.click('#ackNowBtn');
       await page.waitForSelector('#modalBackdrop', { timeout: 3000 });
@@ -134,7 +148,10 @@ async function run() {
       const box = await page.evaluate(() => {
         const el = document.querySelector('.modal-box');
         const r = el ? el.getBoundingClientRect() : null;
-        return { rect: r, viewportW: window.innerWidth, focused: document.activeElement && document.activeElement.id };
+        // See the plainRect() comment in the sticky-bar test above — same
+        // DOMRect-through-evaluate serialization pitfall applies here.
+        const rect = r ? { width: r.width, height: r.height, top: r.top, left: r.left, right: r.right, bottom: r.bottom } : null;
+        return { rect, viewportW: window.innerWidth, focused: document.activeElement && document.activeElement.id };
       });
 
       await test('Modal box fits within the mobile viewport width (no horizontal overflow)', async () => {
