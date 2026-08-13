@@ -1437,12 +1437,12 @@ GET _cat/shards?v
 GET _cluster/allocation/explain</pre>`,
     clickhouse: `
       <p><b>Logs:</b> /var/log/clickhouse-server/clickhouse-server.err.log or kubectl logs.</p>
-      <p><b>Status:</b></p>
+      <p><b>Status:</b> add <code>FORMAT JSON</code> if you can — it's parsed more reliably than the default ASCII table.</p>
       <pre>SELECT database, table, name, is_readonly
-FROM system.parts WHERE is_readonly OR bytes_on_disk = 0;
-SELECT * FROM system.detached_parts;
+FROM system.parts WHERE is_readonly OR bytes_on_disk = 0 FORMAT JSON;
+SELECT * FROM system.detached_parts FORMAT JSON;
 SELECT table, replica_name, is_readonly
-FROM system.replicas WHERE is_readonly;</pre>`,
+FROM system.replicas WHERE is_readonly FORMAT JSON;</pre>`,
     kafka: `
       <p><b>Logs:</b> kubectl logs &lt;broker-pod&gt; --previous</p>
       <p><b>Status:</b></p>
@@ -1546,7 +1546,7 @@ FROM system.replicas WHERE is_readonly;</pre>`,
       { key:'clickhouse', label:'ClickHouse',
         detect:/clickhouse|mergetree|detached_part|system\.parts|system\.replicas|is_readonly|clickhouse-server/i,
         analyze: analyzeClickHouse,
-        statusRequestCommand: `SELECT database, table, name, is_readonly\nFROM system.parts WHERE is_readonly OR bytes_on_disk = 0;\nSELECT * FROM system.detached_parts;\nSELECT table, replica_name, is_readonly\nFROM system.replicas WHERE is_readonly;` },
+        statusRequestCommand: `SELECT database, table, name, is_readonly\nFROM system.parts WHERE is_readonly OR bytes_on_disk = 0 FORMAT JSON;\nSELECT * FROM system.detached_parts FORMAT JSON;\nSELECT table, replica_name, is_readonly\nFROM system.replicas WHERE is_readonly FORMAT JSON;` },
       { key:'kafka', label:'Kafka',
         detect:/kafka|corruptrecordexception|replicationfactor|invalidoffsetexception|\bisr\b/i,
         analyze: analyzeKafka,
@@ -1646,7 +1646,48 @@ FROM system.replicas WHERE is_readonly;</pre>`,
     });
     return rows;
   }
+  // ClickHouse `FORMAT JSON` wraps rows in {"meta":[...],"data":[...],"rows":N,...}.
+  // The companion server concatenates three such blocks under
+  // "----- broken parts -----" / "----- detached parts -----" /
+  // "----- readonly replicas -----" headers (see fetchStatus() in
+  // companion-server.js). This pulls out each JSON object and returns its
+  // `data` rows, or null if the section isn't valid ClickHouse JSON — callers
+  // fall back to the older ASCII-table heuristic parser in that case, so
+  // manually pasted `FORMAT PrettyCompact` output still works.
+  function parseChJsonSections(status){
+    const text = String(status||'');
+    const sections = {};
+    const re = /-----\s*(broken parts|detached parts|readonly replicas)\s*-----\s*\n([\s\S]*?)(?=\n-----|\s*$)/gi;
+    let m; let found = false;
+    while((m = re.exec(text))){
+      const label = m[1].toLowerCase();
+      const body = m[2].trim();
+      if(!body.startsWith('{')) continue;
+      try{
+        const parsed = JSON.parse(body);
+        if(parsed && Array.isArray(parsed.data)){
+          sections[label] = parsed.data;
+          found = true;
+        }
+      }catch(e){ /* not valid JSON for this section — leave it out */ }
+    }
+    return found ? sections : null;
+  }
   function parseChParts(status){
+    const json = parseChJsonSections(status);
+    if(json){
+      const rows = [];
+      (json['broken parts']||[]).forEach(r=>{
+        rows.push({ raw: JSON.stringify(r), table: [r.database, r.table].filter(Boolean).join('.') || r.table || '', part: r.name || '', is_readonly: r.is_readonly });
+      });
+      (json['detached parts']||[]).forEach(r=>{
+        rows.push({ raw: JSON.stringify(r), table: [r.database, r.table].filter(Boolean).join('.') || r.table || '', part: r.name || r.reason || '' });
+      });
+      (json['readonly replicas']||[]).forEach(r=>{
+        rows.push({ raw: JSON.stringify(r), table: r.table || '', part: r.replica_name || '', is_readonly: r.is_readonly });
+      });
+      if(rows.length) return rows;
+    }
     const rows = [];
     status.split('\n').forEach(line=>{
       const clean = line.replace(/[│┃┌┐└┘├┤┬┴┼─|]/g,' ').trim();
@@ -2152,10 +2193,19 @@ FROM system.replicas WHERE is_readonly;</pre>`,
     const parts = parseChParts(status);
     const tableName = (parts[0] && parts[0].table) || 'db.table';
     const partName = (parts[0] && parts[0].part) || '<part_name>';
+    const chJson = parseChJsonSections(status);
 
     const hasCorrupt = /(cannot read all data|checksum doesn't match|corrupt)/i.test(logs);
-    const hasReadonlyReplica = /readonly/i.test(status) && hasNonHeaderRows(status);
-    const hasDetached = hasNonHeaderRows(status) && /detach|part|broken/i.test(status);
+    // Prefer real booleans from FORMAT JSON: the `is_readonly` *key* appears
+    // in the JSON even when the value is 0/false, so a plain /readonly/i
+    // text match on JSON output would false-positive. When JSON is present,
+    // check actual row values/counts instead of matching on key names.
+    const hasReadonlyReplica = chJson
+      ? (chJson['readonly replicas']||[]).some(r => Number(r.is_readonly) === 1 || r.is_readonly === true)
+      : (/readonly/i.test(status) && hasNonHeaderRows(status));
+    const hasDetached = chJson
+      ? (chJson['detached parts']||[]).length > 0
+      : (hasNonHeaderRows(status) && /detach|part|broken/i.test(status));
     const hasTooManyParts = /too many parts/i.test(logs);
     const hasMemLimit = /memory limit.*exceeded/i.test(logs);
     const hasZkExpired = /zookeeper.*session.*expired|keeper.*session.*expired/i.test(logs);

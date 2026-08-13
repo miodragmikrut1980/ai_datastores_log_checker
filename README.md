@@ -1,5 +1,33 @@
 # Incident Toolkit — Instana / ES / ClickHouse / Kafka
 
+## Version 1.3.0 — security & accessibility hardening, structured ClickHouse parsing
+
+Follow-up to the 1.2.0 → `4e0e70b` "Security & accessibility hardening" audit
+(244/244 tests, 0 `npm audit` vulnerabilities). Addresses the review's
+remaining findings:
+
+- **ClickHouse status is now parsed structurally, not just heuristically.**
+  The companion server requests `FORMAT JSON` (was `FORMAT PrettyCompact`)
+  for the parts/detached-parts/replicas queries; `incident-console.html`
+  parses the real `data` rows (exact `database.table`, part name, and a real
+  `is_readonly` boolean) instead of guessing from ASCII box-drawing text.
+  Manually pasted `FORMAT PrettyCompact` output still works — the old parser
+  is kept as a fallback. Fixed a related bug this uncovered: the previous
+  `/readonly/i` text match could false-positive on the JSON key name
+  `is_readonly` even when its value was `0`.
+- **Real headless-Chrome E2E tests added** (`tests/e2e.test.js`,
+  `npm run test:e2e`) covering things jsdom cannot: actual computed layout
+  for the sticky verdict/quick-actions bars (no overlap), a real mobile
+  viewport (390×844) for the modal, real CSS repaint on theme toggle, browser
+  clipboard-API behavior, and a 5000-line log paste. Kept separate from
+  `npm test` since it needs a local Chrome/Chromium — see the file header for
+  setup.
+- **`package.json` scripts split out** per test file
+  (`test:security`, `test:accessibility`, `test:unit`, `test:companion-server`,
+  `test:e2e`) alongside the existing combined `test`.
+- Kafka status parsing remains heuristic (`kafka-topics.sh --describe` has no
+  built-in JSON output) — tracked as a known limitation below.
+
 ## Version 1.2.0 — semantic evidence model, structural gaps closed
 
 Found and fixed via a series of live simulated incidents (not code review —
@@ -327,16 +355,42 @@ status/unit status when `stanctl` is available locally.
 - **History is session-only** — Incident Console does not use persistent browser
   storage (intentionally, due to constraints of the environment it runs in); export
   JSON if you want to save an analysis and import it back later.
+- **Kafka status parsing is still heuristic** — `kafka-topics.sh --describe`
+  has no built-in JSON output (unlike ES's `_cat/shards?format=json` and
+  ClickHouse's `FORMAT JSON`, both of which the tool now prefers), so
+  `parseKafkaTopics()` stays regex-based on the plain-text describe output.
+
+### Troubleshooting
+
+- **`npm install` prints a warning about an unknown `http-proxy`
+  configuration.** This is not from this repo — there's no `.npmrc` here and
+  the only `http-proxy`-named package in `package-lock.json` is
+  `http-proxy-agent`, a normal transitive dependency of `puppeteer-core` used
+  for actual HTTP proxying to Chrome's DevTools protocol, not an npm config
+  key. The warning comes from a local/global `.npmrc` (often a leftover
+  `http-proxy=` entry — newer npm expects `proxy=` instead). Check
+  `npm config get http-proxy` and your global `~/.npmrc`; it's safe to ignore
+  otherwise.
 
 ## Testing
 
 ```bash
-npm install     # installs jsdom (the only dev dependency)
-npm test        # runs the whole test suite
+npm install            # installs jsdom + puppeteer-core (dev dependencies)
+npm test                     # runs the jsdom suite (unit + companion-server + security + accessibility)
+npm run test:unit            # incident-console.test.js only
+npm run test:companion-server
+npm run test:security
+npm run test:accessibility
+npm run test:e2e             # real headless-Chrome checks — needs a local Chrome/Chromium, see tests/e2e.test.js
 ```
 
-The test suite covers (162 tests, `tests/`):
-- `incident-console.test.js` — 150 tests against `incident-console.html` via jsdom:
+As of v1.3.0 the jsdom suite is 250 tests total (212 + 15 + 14 + 9 across the
+four files below), plus `tests/e2e.test.js` covering real-browser layout,
+mobile viewport, theme repaint, and clipboard behavior that jsdom can't
+verify (see that file's header for why it's kept separate from `npm test`).
+
+The test suite covers (`tests/`):
+- `incident-console.test.js` — 212 tests against `incident-console.html` via jsdom:
   analysis for all 3 systems, table parsing, checklist/progress, timeline,
   JSON/ECS logs, diff comparison, custom rules (including the ReDoS warning),
   redacting sensitive data, upload/auto-classification of files, history, export,
@@ -364,14 +418,26 @@ The test suite covers (162 tests, `tests/`):
   click gets a unique filename (a second export no longer silently overwrites
   the first), the Timeline filters out routine/info log noise — falling back
   to showing everything only if literally nothing looks like an error or
-  warning — and that the Kafka "remove corrupt segment" recommendation is a
+  warning — the Kafka "remove corrupt segment" recommendation is a
   real, copy-paste-ready `rm` command with the exact path parsed from the
   pasted logs (with a clearly-labeled fallback, not a silent wrong guess,
-  when no path can be parsed).
-- `companion-server.test.js` — 12 integration tests: a **real HTTP server** started
+  when no path can be parsed), and structured ClickHouse `FORMAT JSON` parsing
+  (exact table/part names, real `is_readonly` booleans, with a fallback to the
+  old ASCII-table heuristic for manually pasted `FORMAT PrettyCompact` output).
+- `companion-server.test.js` — 15 integration tests: a **real HTTP server** started
   as a child process with a mock `kubectl` (`tests/fixtures/mock-kubectl`), checking
   auth (401/400), injection protection, CORS scoping (`null`, not `*`), and the
-  exact commands for all 3 system types.
+  exact commands for all 4 system types (including that ClickHouse now requests
+  `FORMAT JSON`).
+- `security.test.js` — 14 XSS/injection tests across Instana, Kubernetes, uploaded
+  filenames, and custom rules.
+- `accessibility.test.js` — 9 tests: ARIA roles/live-regions, tab order, and modal
+  focus management.
+- `e2e.test.js` — real headless-Chrome checks: sticky verdict/quick-actions bars
+  don't overlap in real computed layout, the modal fits and gets real focus on a
+  390×844 mobile viewport, theme toggle actually repaints computed CSS, the
+  clipboard API completes under real browser permissions, and a 5000-line log
+  paste doesn't overflow the layout.
 
 Whenever you change `incident-console.html` or `companion-server.js`, run `npm test`
 before considering the change done — this is the "safety net" that keeps a silent

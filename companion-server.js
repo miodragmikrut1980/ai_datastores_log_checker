@@ -153,9 +153,12 @@ async function fetchStatus(namespace, pod, type) {
     return `----- _cluster/health -----\n${health}\n----- _cat/shards?v -----\n${shards}`;
   }
   if (type === 'clickhouse') {
-    const q1 = "SELECT database, table, name, is_readonly FROM system.parts WHERE is_readonly OR bytes_on_disk = 0 FORMAT PrettyCompact";
-    const q2 = "SELECT * FROM system.detached_parts FORMAT PrettyCompact";
-    const q3 = "SELECT table, replica_name, is_readonly FROM system.replicas WHERE is_readonly FORMAT PrettyCompact";
+    // FORMAT JSON (not PrettyCompact) so the frontend can parse structured
+    // rows instead of guessing table/part names from ASCII box-drawing text.
+    // See parseChParts()/parseChJsonSection() in incident-console.html.
+    const q1 = "SELECT database, table, name, is_readonly FROM system.parts WHERE is_readonly OR bytes_on_disk = 0 FORMAT JSON";
+    const q2 = "SELECT * FROM system.detached_parts FORMAT JSON";
+    const q3 = "SELECT table, replica_name, is_readonly FROM system.replicas WHERE is_readonly FORMAT JSON";
     const [parts, detached, replicas] = await Promise.all([
       runKubectl(['exec', pod, '-n', namespace, '--', 'clickhouse-client', '-q', q1]),
       runKubectl(['exec', pod, '-n', namespace, '--', 'clickhouse-client', '-q', q2]),
@@ -164,6 +167,9 @@ async function fetchStatus(namespace, pod, type) {
     return `----- broken parts -----\n${parts}\n----- detached parts -----\n${detached}\n----- readonly replicas -----\n${replicas}`;
   }
   if (type === 'kafka') {
+    // kafka-topics.sh --describe has no built-in JSON output (unlike ES/CH),
+    // so this stays text-based. Known heuristic-parsing limitation — see
+    // README "Known limitations".
     const describe = await runKubectl(['exec', pod, '-n', namespace, '--', 'kafka-topics.sh', '--bootstrap-server', 'localhost:9092', '--describe']);
     return `----- kafka-topics.sh --describe -----\n${describe}`;
   }

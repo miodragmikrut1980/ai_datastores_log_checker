@@ -1,0 +1,23 @@
+{
+  "name": "incident-console-tests",
+  "version": "1.3.0",
+  "private": true,
+  "description": "Test suite za Incident Console (incident-console.html) i companion-server.js",
+  "scripts": {
+    "test": "node tests/run-all.js",
+    "test:unit": "node tests/incident-console.test.js",
+    "test:companion-server": "node tests/companion-server.test.js",
+    "test:security": "node tests/security.test.js",
+    "test:accessibility": "node tests/accessibility.test.js",
+    "test:e2e": "node tests/e2e.test.js",
+    "start": "node companion-server.js",
+    "demo": "node demo/record-demo.js",
+    "training": "node demo/record-training.js"
+  },
+  "devDependencies": {
+    "jsdom": "^24.0.0"
+  },
+  "dependencies": {
+    "puppeteer-core": "^25.5.0"
+  }
+}

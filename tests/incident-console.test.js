@@ -2081,6 +2081,71 @@ async function run() {
     });
   });
 
+  await suite('ClickHouse FORMAT JSON status (companion-server v1.3 output) is parsed structurally', async () => {
+    const { window, doc } = await loadDom();
+    doc.getElementById('logsInput').value =
+      "2026.07.26 10:05:02 [ ERROR ] db.orders (ReplicatedMergeTree): Cannot read all data. Bytes read: 120. Bytes expected: 4096. Checksum doesn't match: corrupted data.\n" +
+      "2026.07.26 10:05:03 [ WARN ] db.orders: Marking part 202607_10_10_0 as broken, moving to detached";
+    doc.getElementById('statusInput').value =
+      '----- broken parts -----\n' +
+      '{"meta":[{"name":"database","type":"String"},{"name":"table","type":"String"},{"name":"name","type":"String"},{"name":"is_readonly","type":"UInt8"}],"data":[{"database":"default","table":"orders","name":"202607_10_10_0","is_readonly":0}],"rows":1}\n' +
+      '----- detached parts -----\n' +
+      '{"meta":[{"name":"database","type":"String"},{"name":"table","type":"String"},{"name":"name","type":"String"},{"name":"reason","type":"String"}],"data":[{"database":"default","table":"orders","name":"202607_10_10_0","reason":"broken"}],"rows":1}\n' +
+      '----- readonly replicas -----\n' +
+      '{"meta":[{"name":"table","type":"String"},{"name":"replica_name","type":"String"},{"name":"is_readonly","type":"UInt8"}],"data":[],"rows":0}\n';
+    click(doc.querySelector('#systemPicker button[data-val="clickhouse"]'), window);
+    click(doc.getElementById('analyzeBtn'), window);
+    await wait(300);
+
+    await test('Table/part name are extracted from the JSON rows (default.orders / 202607_10_10_0), not left as placeholders', async () => {
+      const text = doc.getElementById('findingsList').textContent;
+      assertIncludes(text, 'default.orders');
+      assertIncludes(text, '202607_10_10_0');
+    });
+
+    await test('Detached parts are correctly flagged from the JSON data array (rows:1)', async () => {
+      assertIncludes(doc.getElementById('findingsList').textContent, 'Detached parts exist');
+    });
+
+    await test('Regression: is_readonly:0 in the JSON (empty replicas array) must NOT falsely flag "readonly replica" — the old /readonly/i text match would fire on the key name alone', async () => {
+      assertNotIncludes(doc.getElementById('findingsList').textContent, 'Replica in readonly mode');
+    });
+  });
+
+  await suite('ClickHouse FORMAT JSON: an actual readonly replica row is detected from real boolean value', async () => {
+    const { window, doc } = await loadDom();
+    doc.getElementById('logsInput').value = 'zookeeper session expired for /clickhouse/tables/orders/replicas/replica2';
+    doc.getElementById('statusInput').value =
+      '----- broken parts -----\n{"meta":[],"data":[],"rows":0}\n' +
+      '----- detached parts -----\n{"meta":[],"data":[],"rows":0}\n' +
+      '----- readonly replicas -----\n{"meta":[{"name":"table","type":"String"},{"name":"replica_name","type":"String"},{"name":"is_readonly","type":"UInt8"}],"data":[{"table":"orders","replica_name":"replica2","is_readonly":1}],"rows":1}\n';
+    click(doc.querySelector('#systemPicker button[data-val="clickhouse"]'), window);
+    click(doc.getElementById('analyzeBtn'), window);
+    await wait(300);
+
+    await test('"Replica in readonly mode" finding fires from the structured is_readonly:1 row', async () => {
+      assertIncludes(doc.getElementById('findingsList').textContent, 'Replica in readonly mode');
+    });
+  });
+
+  await suite('ClickHouse plain-text FORMAT PrettyCompact status still works (backward compatibility)', async () => {
+    const { window, doc } = await loadDom();
+    doc.getElementById('logsInput').value =
+      "2026.07.26 10:05:02 [ ERROR ] db.orders (ReplicatedMergeTree): Cannot read all data. Bytes read: 120. Bytes expected: 4096. Checksum doesn't match: corrupted data.\n" +
+      "2026.07.26 10:05:03 [ WARN ] db.orders: Marking part 202607_10_10_0 as broken, moving to detached";
+    doc.getElementById('statusInput').value =
+      '┌─database─┬─table──┬─name───────────┬─reason─┐\n' +
+      '│ default  │ orders │ 202607_10_10_0 │ broken │\n' +
+      '└──────────┴────────┴────────────────┴────────┘';
+    click(doc.querySelector('#systemPicker button[data-val="clickhouse"]'), window);
+    click(doc.getElementById('analyzeBtn'), window);
+    await wait(300);
+
+    await test('Falls back to the ASCII-table heuristic parser and still finds the detached part', async () => {
+      assertIncludes(doc.getElementById('findingsList').textContent, 'Detached parts exist');
+    });
+  });
+
   const ok = summary();
   process.exit(ok ? 0 : 1);
 }

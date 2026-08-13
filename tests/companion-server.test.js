@@ -102,6 +102,12 @@ async function run() {
       assertIncludes(data.text, 'detached parts');
     });
 
+    await test('/status for clickhouse requests FORMAT JSON, not PrettyCompact (regression: structured parsing needs real JSON)', async () => {
+      const res = await httpGet(`http://127.0.0.1:${PORT}/status?namespace=production&pod=ch-0&type=clickhouse`, { 'X-Companion-Token': token });
+      const data = JSON.parse(res.body);
+      assertIncludes(data.text, 'FORMAT JSON');
+    });
+
     await test('/status for kafka calls kafka-topics.sh --describe', async () => {
       const res = await httpGet(`http://127.0.0.1:${PORT}/status?namespace=production&pod=kafka-0&type=kafka`, { 'X-Companion-Token': token });
       const data = JSON.parse(res.body);

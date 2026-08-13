@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Fake "kubectl" used only in tests — never touches a real cluster.
+# Prints the arguments it was called with, so tests can verify exactly
+# which commands companion-server.js tried to run.
+echo "MOCK kubectl called with args: $@"

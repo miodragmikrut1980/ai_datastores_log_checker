@@ -1,0 +1,38 @@
+name: Tests
+
+# Runs the full test suite (incident-console.test.js + companion-server.test.js)
+# on every push and pull request — the "no CI" gap flagged in review.
+# Deliberately minimal: this repo's actual quality gate is the tests
+# themselves (200 UI + 14 server, each regression tied to a specific
+# incident scenario that was actually role-played, not just imagined) —
+# this workflow just makes sure they run automatically instead of relying
+# on someone remembering to run `npm test` before pushing.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Run test suite
+        run: npm test
+
+      - name: Fail on any test failure
+        if: failure()
+        run: |
+          echo "::error::Test suite failed — see the 'Run test suite' step above for which test(s) broke."
+          exit 1
