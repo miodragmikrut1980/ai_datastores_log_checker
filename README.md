@@ -1,5 +1,10 @@
 # Incident Toolkit — Instana / ES / ClickHouse / Kafka
 
+## Version 1.3.1 — release hardening and real-browser verification
+
+This release removes the duplicated repository copy, runs the real-browser E2E
+suite in GitHub Actions, and documents the complete verification gate.
+
 ## Version 1.3.0 — security & accessibility hardening, structured ClickHouse parsing
 
 Follow-up to the 1.2.0 → `4e0e70b` "Security & accessibility hardening" audit
@@ -384,10 +389,10 @@ npm run test:accessibility
 npm run test:e2e             # real headless-Chrome checks — needs a local Chrome/Chromium, see tests/e2e.test.js
 ```
 
-As of v1.3.0 the jsdom suite is 250 tests total (212 + 15 + 14 + 9 across the
-four files below), plus `tests/e2e.test.js` covering real-browser layout,
-mobile viewport, theme repaint, and clipboard behavior that jsdom can't
-verify (see that file's header for why it's kept separate from `npm test`).
+As of v1.3.1 the automated verification gate contains 259 tests total:
+250 jsdom/integration tests (212 UI + 15 companion-server + 14 security + 9
+accessibility) and 9 real-browser E2E tests. GitHub Actions installs Chrome and
+runs both `npm test` and `npm run test:e2e` on every push and pull request.
 
 The test suite covers (`tests/`):
 - `incident-console.test.js` — 212 tests against `incident-console.html` via jsdom:

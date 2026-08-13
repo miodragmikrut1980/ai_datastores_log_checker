@@ -1,9 +1,9 @@
 name: Tests
 
-# Runs the full test suite (incident-console.test.js + companion-server.test.js)
+# Runs the jsdom/integration suite and the real-browser E2E suite
 # on every push and pull request — the "no CI" gap flagged in review.
 # Deliberately minimal: this repo's actual quality gate is the tests
-# themselves (200 UI + 14 server, each regression tied to a specific
+# themselves (212 UI + 15 server + 14 security + 9 accessibility, each regression tied to a specific
 # incident scenario that was actually role-played, not just imagined) —
 # this workflow just makes sure they run automatically instead of relying
 # on someone remembering to run `npm test` before pushing.
@@ -30,6 +30,12 @@ jobs:
 
       - name: Run test suite
         run: npm test
+
+      - name: Install Chrome for real-browser E2E tests
+        run: npx puppeteer browsers install chrome
+
+      - name: Run real-browser E2E suite
+        run: npm run test:e2e
 
       - name: Fail on any test failure
         if: failure()
