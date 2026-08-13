@@ -655,18 +655,18 @@
     </div>
 
     <div class="field">
-      <label>System</label>
-      <div class="segmented" id="systemPicker">
-        <button data-val="auto" class="active">Auto</button>
-        <button data-val="instana">Instana</button>
-        <button data-val="elasticsearch">ES</button>
-        <button data-val="clickhouse">ClickHouse</button>
-        <button data-val="kafka">Kafka</button>
+      <label id="systemPickerLabel">System</label>
+      <div class="segmented" id="systemPicker" role="radiogroup" aria-labelledby="systemPickerLabel">
+        <button data-val="auto" class="active" role="radio" aria-checked="true">Auto</button>
+        <button data-val="instana" role="radio" aria-checked="false">Instana</button>
+        <button data-val="elasticsearch" role="radio" aria-checked="false">ES</button>
+        <button data-val="clickhouse" role="radio" aria-checked="false">ClickHouse</button>
+        <button data-val="kafka" role="radio" aria-checked="false">Kafka</button>
       </div>
     </div>
 
     <div class="field">
-      <label>Import files <span class="help-icon" data-tooltip="Drag the whole diag-report folder at once (from diag-agent.sh), or individual .txt/.log files. The tool auto-detects whether a file is a log or status based on its name/content.">?</span></label>
+      <label>Import files <span class="help-icon" data-tooltip="Drag the whole diag-report folder at once (from diag-agent.sh), or individual .txt/.log files. The tool auto-detects whether a file is a log or status based on its name/content." tabindex="0" role="note" aria-label="Help: Drag the whole diag-report folder at once (from diag-agent.sh), or individual .txt/.log files. The tool auto-detects whether a file is a log or status based on its name/content.">?</span></label>
       <div class="dropzone" id="dropzone">
         <b>Drag files here</b>
         or click to choose (.txt, .log, .json)
@@ -676,7 +676,7 @@
     </div>
 
     <details class="help-panel" id="companionPanel">
-      <summary>Companion server (auto-fetch, no copy-paste) <span class="help-icon" data-tooltip="Run companion-server.js locally, then enter the details here to automatically pull logs/status directly from the cluster.">?</span></summary>
+      <summary>Companion server (auto-fetch, no copy-paste) <span class="help-icon" data-tooltip="Run companion-server.js locally, then enter the details here to automatically pull logs/status directly from the cluster." tabindex="0" role="note" aria-label="Help: Run companion-server.js locally, then enter the details here to automatically pull logs/status directly from the cluster.">?</span></summary>
       <div class="help-panel-body">
         <div class="field"><label>Namespace</label><input type="text" id="cNamespace" class="rule-input" placeholder="e.g. production"></div>
         <div class="field"><label>Pod</label><input type="text" id="cPod" class="rule-input" placeholder="e.g. es-data-0"></div>
@@ -689,7 +689,7 @@
     </details>
 
     <div class="field">
-      <label>Logs (kubectl logs --previous / logs) <span class="help-icon" data-tooltip="Auto-filled if you dragged in files like 03-logs-previous.txt. You can also paste/edit manually.">?</span></label>
+      <label>Logs (kubectl logs --previous / logs) <span class="help-icon" data-tooltip="Auto-filled if you dragged in files like 03-logs-previous.txt. You can also paste/edit manually." tabindex="0" role="note" aria-label="Help: Auto-filled if you dragged in files like 03-logs-previous.txt. You can also paste/edit manually.">?</span></label>
       <textarea id="logsInput" placeholder="Paste the output of these commands here:
 kubectl logs &lt;pod&gt; --previous
 kubectl logs &lt;pod&gt;
@@ -698,7 +698,7 @@ kubectl logs &lt;pod&gt;
     </div>
 
     <div class="field">
-      <label>Status output — optional (health / shards / parts / topics) <span class="help-icon" data-tooltip="Auto-filled from files like 11-es-shards.txt, 10-ch-broken-parts.txt, 11-kafka-topics-describe.txt.">?</span></label>
+      <label>Status output — optional (health / shards / parts / topics) <span class="help-icon" data-tooltip="Auto-filled from files like 11-es-shards.txt, 10-ch-broken-parts.txt, 11-kafka-topics-describe.txt." tabindex="0" role="note" aria-label="Help: Auto-filled from files like 11-es-shards.txt, 10-ch-broken-parts.txt, 11-kafka-topics-describe.txt.">?</span></label>
       <div id="statusCmdHint"></div>
       <textarea id="statusInput" placeholder="Optional — paste the status output here once you have it. Don't have it? That's fine, analyze with just the logs — the tool will give you a ready-made message to request it from the customer."></textarea>
     </div>
@@ -766,18 +766,18 @@ kubectl logs &lt;pod&gt;
       <button id="qaInputs">Edit evidence</button>
     </div>
 
-    <div class="tabs">
-      <button class="tab active" data-tab="nalaz">Findings <span class="count" id="countNalaz">0</span></button>
-      <button class="tab" data-tab="preporuke">Recommendations <span class="count" id="countPreporuke">0</span></button>
-      <button class="tab advanced-tab" data-tab="dijagram" style="display:none">Diagram</button>
-      <button class="tab advanced-tab" data-tab="poredjenje" style="display:none">Comparison</button>
-      <button class="tab advanced-tab" data-tab="linija" style="display:none">Timeline</button>
-      <button class="tab advanced-tab" data-tab="pravila" style="display:none">Rules <span class="count" id="countPravila">0</span></button>
-      <button class="tab advanced-tab" data-tab="istorija-tab" style="display:none">History <span class="count" id="countIstorija">0</span></button>
-      <button class="tab" id="toggleAdvancedBtn" style="margin-left:auto; color:var(--muted);">Advanced ▾</button>
+    <div class="tabs" role="tablist" aria-label="Analysis views">
+      <button id="tab-nalaz" class="tab active" data-tab="nalaz" role="tab" aria-selected="true">Findings <span class="count" id="countNalaz">0</span></button>
+      <button id="tab-preporuke" class="tab" data-tab="preporuke" role="tab" aria-selected="false">Recommendations <span class="count" id="countPreporuke">0</span></button>
+      <button id="tab-dijagram" class="tab advanced-tab" data-tab="dijagram" role="tab" aria-selected="false" style="display:none">Diagram</button>
+      <button id="tab-poredjenje" class="tab advanced-tab" data-tab="poredjenje" role="tab" aria-selected="false" style="display:none">Comparison</button>
+      <button id="tab-linija" class="tab advanced-tab" data-tab="linija" role="tab" aria-selected="false" style="display:none">Timeline</button>
+      <button id="tab-pravila" class="tab advanced-tab" data-tab="pravila" role="tab" aria-selected="false" style="display:none">Rules <span class="count" id="countPravila">0</span></button>
+      <button id="tab-istorija-tab" class="tab advanced-tab" data-tab="istorija-tab" role="tab" aria-selected="false" style="display:none">History <span class="count" id="countIstorija">0</span></button>
+      <button class="tab" id="toggleAdvancedBtn" aria-expanded="false" style="margin-left:auto; color:var(--muted);">Advanced ▾</button>
     </div>
 
-    <div class="panel active" id="panel-nalaz">
+    <div class="panel active" id="panel-nalaz" role="tabpanel" aria-labelledby="tab-nalaz">
       <div id="stopBannerWrap" style="display:none"></div>
       <div id="failedCaptureWrap" style="display:none"></div>
       <div id="multiSystemWrap" style="display:none"></div>
@@ -789,7 +789,7 @@ kubectl logs &lt;pod&gt;
       <div id="findingsList"></div>
     </div>
 
-    <div class="panel" id="panel-preporuke">
+    <div class="panel" id="panel-preporuke" role="tabpanel" aria-labelledby="tab-preporuke">
       <div class="empty" id="emptyPreporuke">Suggested fixes will appear here after analysis.</div>
       <div id="infoRequestWrap" style="display:none; margin-bottom:16px;"></div>
       <div id="ticketBtnWrap" style="display:none; margin-bottom:14px;">
@@ -806,12 +806,12 @@ kubectl logs &lt;pod&gt;
       <div id="preventiveList"></div>
     </div>
 
-    <div class="panel" id="panel-dijagram">
+    <div class="panel" id="panel-dijagram" role="tabpanel" aria-labelledby="tab-dijagram">
       <div class="empty" id="emptyDijagram">Diagrams will appear here after analysis.</div>
       <div id="diagramsList"></div>
     </div>
 
-    <div class="panel" id="panel-poredjenje">
+    <div class="panel" id="panel-poredjenje" role="tabpanel" aria-labelledby="tab-poredjenje">
       <div class="card">
         <h3>Compare two status snapshots (before/after recovery)</h3>
         <p style="color:var(--muted); margin:0 0 12px;">Paste status output (same type as used for analysis — shards/parts/topics describe) from the start of the incident and after the recovery step, to see exactly what changed.</p>
@@ -827,12 +827,12 @@ kubectl logs &lt;pod&gt;
       <div id="diffResult"></div>
     </div>
 
-    <div class="panel" id="panel-linija">
+    <div class="panel" id="panel-linija" role="tabpanel" aria-labelledby="tab-linija">
       <div class="empty" id="emptyLinija">Analyze an incident with logs that contain timestamps, and the event timeline will appear here.</div>
       <div id="timelineResult"></div>
     </div>
 
-    <div class="panel" id="panel-pravila">
+    <div class="panel" id="panel-pravila" role="tabpanel" aria-labelledby="tab-pravila">
       <div class="card">
         <h3>Add your own rule</h3>
         <p style="color:var(--muted); margin:0 0 12px;">Detect a pattern specific to your system (e.g. an internal error) and optionally add a suggested fix for it.</p>
@@ -878,7 +878,7 @@ kubectl logs &lt;pod&gt;
       <div id="rulesList"></div>
     </div>
 
-    <div class="panel" id="panel-istorija-tab">
+    <div class="panel" id="panel-istorija-tab" role="tabpanel" aria-labelledby="tab-istorija-tab">
       <div class="empty" id="emptyIstorija">No analyses yet in this session. Once you analyze an incident, it will appear here — you can also import previously exported JSON reports to add them back to the list.</div>
       <div id="historyList"></div>
     </div>
@@ -886,7 +886,7 @@ kubectl logs &lt;pod&gt;
 </div>
 
 <footer>Incident Console · local heuristic tool · does not replace human judgment before destructive commands</footer>
-<div id="toastWrap"></div>
+<div id="toastWrap" role="status" aria-live="polite"></div>
 <div id="modalWrap"></div>
 
 
@@ -1016,7 +1016,36 @@ kubectl logs &lt;pod&gt;
     wrap.appendChild(el);
     setTimeout(()=>{ el.style.opacity='0'; el.style.transition='opacity .3s'; setTimeout(()=>el.remove(), 300); }, 2600);
   }
-  function escapeHtml(s){ return String(s).replace(/</g,'&lt;'); }
+  // Close either modal (Ticket text / Escalation / Quick-check) on Escape —
+  // keyboard-only users otherwise have no way out short of Tab-cycling to
+  // the Close button.
+  document.addEventListener('keydown', e=>{
+    if(e.key === 'Escape'){
+      const modalWrap = document.getElementById('modalWrap');
+      if(modalWrap && modalWrap.innerHTML.trim()) modalWrap.innerHTML = '';
+    }
+  });
+  // Escapes all five HTML-significant characters, not just "<". A version
+  // that only escaped "<" was safe for text NODES (you can't open a new tag
+  // without "<") but not for ATTRIBUTE VALUES: text containing an
+  // unescaped '"' can close the attribute early and append new attributes
+  // (e.g. onmouseover=...) without ever needing "<". Every call site in
+  // this file — text content and attribute values alike — relies on this
+  // covering both cases.
+  function escapeHtml(s){
+    return String(s).replace(/[&<>"']/g, c => ({
+      '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'
+    }[c]));
+  }
+  // Only http(s) links are ever rendered as a real <a href>. docLink is
+  // developer-authored today, but recommendations can also come from custom
+  // rules (typed locally or imported from a JSON file — see importRulesFile
+  // handler), so this stays a hard allowlist rather than trusting the field.
+  // Blocks javascript:, data:, vbscript:, and any other scheme.
+  function isSafeDocLink(url){
+    if(!url || typeof url !== 'string') return false;
+    return /^https:\/\//i.test(url.trim()) || /^http:\/\//i.test(url.trim());
+  }
 
   // ---- Incident variables: fill the same namespace/pod/statefulset/
   // container into every command's placeholder at once, instead of editing
@@ -1237,7 +1266,10 @@ kubectl logs &lt;pod&gt;
 
   function renderFileChips(){
     const wrap = document.getElementById('fileChips');
-    wrap.innerHTML = state.uploadedFiles.map(f=>`<span class="file-chip">${f.name} → <b>${f.bucket}</b></span>`).join('');
+    // f.name is the uploaded file's OS filename — fully attacker-controlled
+    // (someone can name a file anything before sharing it) — must be escaped
+    // like any other untrusted string reaching innerHTML.
+    wrap.innerHTML = state.uploadedFiles.map(f=>`<span class="file-chip">${escapeHtml(f.name)} → <b>${escapeHtml(f.bucket)}</b></span>`).join('');
   }
 
   function handleFiles(fileList){
@@ -1425,7 +1457,11 @@ FROM system.replicas WHERE is_readonly;</pre>`,
   // ============================================================
   function setSystem(val){
     state.system = val;
-    [...document.getElementById('systemPicker').children].forEach(b=>b.classList.toggle('active', b.dataset.val===val));
+    [...document.getElementById('systemPicker').children].forEach(b=>{
+      const active = b.dataset.val===val;
+      b.classList.toggle('active', active);
+      b.setAttribute('aria-checked', String(active));
+    });
     updateHelpPanel();
     renderStatusCmdHint(val);
   }
@@ -1439,7 +1475,11 @@ FROM system.replicas WHERE is_readonly;</pre>`,
   // Tabs + top nav (New incident / History)
   // ============================================================
   function showTab(name){
-    document.querySelectorAll('.tab[data-tab]').forEach(t=>t.classList.toggle('active', t.dataset.tab===name));
+    document.querySelectorAll('.tab[data-tab]').forEach(t=>{
+      const active = t.dataset.tab===name;
+      t.classList.toggle('active', active);
+      t.setAttribute('aria-selected', String(active));
+    });
     document.querySelectorAll('.panel').forEach(p=>p.classList.toggle('active', p.id==='panel-'+name));
   }
   document.querySelectorAll('.tab[data-tab]').forEach(tab=>tab.addEventListener('click', ()=>showTab(tab.dataset.tab)));
@@ -1460,6 +1500,7 @@ FROM system.replicas WHERE is_readonly;</pre>`,
     advancedShown = !advancedShown;
     document.querySelectorAll('.advanced-tab').forEach(t=>t.style.display = advancedShown ? '' : 'none');
     document.getElementById('toggleAdvancedBtn').textContent = advancedShown ? 'Advanced ▴' : 'Advanced ▾';
+    document.getElementById('toggleAdvancedBtn').setAttribute('aria-expanded', String(advancedShown));
     if(!advancedShown){
       const activeAdvanced = document.querySelector('.advanced-tab.active');
       if(activeAdvanced) showTab('nalaz');
@@ -2439,7 +2480,7 @@ FROM system.replicas WHERE is_readonly;</pre>`,
     document.getElementById('findingsList').innerHTML = `
       <div class="card"><h3>Detected system: ${system.toUpperCase()}</h3>
         ${newNote}${filterNote}
-        ${visible.map(({f,i})=>`<div class="finding-row"><div class="dot ${f.sev}"></div><div class="finding-text"><b>${f.title}${f.isNew?`<span class="badge new" data-tooltip="Was not present in the previous analysis of this incident">NEW</span>`:''}${sevBadge(f.sev)}${confBadge(f.confidence)}</b><span>${f.note}</span>${f.evidence?`<span class="evidence-quote" data-finding-idx="${i}">"${renderEvidenceHtml(f.evidence)}"</span><div class="evidence-context" id="ctx-${i}" style="display:none"></div>`:''}</div></div>`).join('')}
+        ${visible.map(({f,i})=>`<div class="finding-row"><div class="dot ${f.sev}"></div><div class="finding-text"><b>${escapeHtml(f.title)}${f.isNew?`<span class="badge new" data-tooltip="Was not present in the previous analysis of this incident">NEW</span>`:''}${sevBadge(f.sev)}${confBadge(f.confidence)}</b><span>${escapeHtml(f.note)}</span>${f.evidence?`<span class="evidence-quote" data-finding-idx="${i}">"${renderEvidenceHtml(f.evidence)}"</span><div class="evidence-context" id="ctx-${i}" style="display:none"></div>`:''}</div></div>`).join('')}
         ${visible.length===0 ? '<p style="color:var(--muted); font-size:12px;">No findings match this filter.</p>' : ''}
         ${renderTable(table)}
       </div>`;
@@ -2566,16 +2607,16 @@ FROM system.replicas WHERE is_readonly;</pre>`,
     return `
       <div class="card rec">
         ${riskStamp(r.risk)}
-        <h3>${r.title}${r.fromCustomRule ? '<span class="badge info">CUSTOM RULE</span>' : ''}</h3>
+        <h3>${escapeHtml(r.title)}${r.fromCustomRule ? '<span class="badge info">CUSTOM RULE</span>' : ''}</h3>
         ${targetConfirmationHtml(r)}
-        <div class="rec-section"><div class="rec-label">Prerequisites</div><p>${r.prereq}</p>
+        <div class="rec-section"><div class="rec-label">Prerequisites</div><p>${escapeHtml(r.prereq)}</p>
           ${r.prereqCommand ? `<pre class="cmd cmd-prereq" id="${cmdId}-prereq">${cmdTextHtml(r.prereqCommand)}<button class="copy-btn" data-copy="${cmdId}-prereq">copy</button></pre>` : ''}</div>
         <div class="rec-section"><div class="rec-label">Suggested command</div>
           ${cmdBlock}</div>
-        <div class="rec-section"><div class="rec-label">Possible consequences</div><p>${r.consequence}</p></div>
+        <div class="rec-section"><div class="rec-label">Possible consequences</div><p>${escapeHtml(r.consequence)}</p></div>
         ${approvalHtml}
-        <div class="rec-section"><div class="rec-label">Rollback / recovery if this fails</div><p>${r.rollback || 'No automatic rollback is available. Stop, preserve evidence, and escalate before trying another change.'}</p></div>
-        ${r.docLink ? `<div class="rec-section"><a href="${r.docLink}" target="_blank" rel="noopener noreferrer" class="doc-link">📖 Official documentation ↗</a></div>` : ''}
+        <div class="rec-section"><div class="rec-label">Rollback / recovery if this fails</div><p>${escapeHtml(r.rollback || 'No automatic rollback is available. Stop, preserve evidence, and escalate before trying another change.')}</p></div>
+        ${isSafeDocLink(r.docLink) ? `<div class="rec-section"><a href="${escapeHtml(r.docLink)}" target="_blank" rel="noopener noreferrer" class="doc-link">📖 Official documentation ↗</a></div>` : ''}
         <details class="help-panel" style="margin-top:10px;">
           <summary>📋 Message for the customer (copy & send)</summary>
           <div class="help-panel-body">
@@ -2645,9 +2686,12 @@ FROM system.replicas WHERE is_readonly;</pre>`,
     const activeIdx = STAGES.findIndex(s=>s.key===stage);
     wrap.style.display = 'flex';
     wrap.className = 'stage-stepper';
+    wrap.setAttribute('role', 'tablist');
+    wrap.setAttribute('aria-label', 'Incident stage');
     wrap.innerHTML = STAGES.map((s,i)=>{
       const cls = s.key===stage ? 'active' : (i<activeIdx ? 'past' : '');
-      return `<button class="stage-pill ${cls}" data-stage="${s.key}" data-tooltip="${escapeHtml(s.tip)}">${i+1}. ${s.label}</button>`;
+      const current = s.key===stage ? ' aria-current="step"' : '';
+      return `<button class="stage-pill ${cls}" data-stage="${s.key}" data-tooltip="${escapeHtml(s.tip)}"${current}>${i+1}. ${s.label}</button>`;
     }).join('<span class="stage-arrow">→</span>');
     wrap.querySelectorAll('.stage-pill').forEach(btn=>{
       btn.addEventListener('click', ()=> setIncidentStage(btn.dataset.stage));
@@ -2683,8 +2727,13 @@ FROM system.replicas WHERE is_readonly;</pre>`,
       actions += `<button class="v-btn-ghost" id="escalateBtn" data-tooltip="Opens a summary for a specialist or vendor support — use when no safe fix exists here.">🚨 Escalation message</button>`;
     }
 
+    // A danger/warn verdict is exactly the moment a screen-reader user must
+    // not miss — role="alert" makes it announce immediately, without
+    // needing focus. "safe"/"info" tones use role="status" (polite,
+    // non-interrupting) since there's nothing urgent to interrupt for.
+    const bannerRole = (copy.tone === 'danger' || copy.tone === 'warn') ? 'alert' : 'status';
     wrap.innerHTML = `
-      <div class="verdict-banner tone-${copy.tone}">
+      <div class="verdict-banner tone-${copy.tone}" role="${bannerRole}">
         <div class="v-icon" data-tooltip="${escapeHtml(copy.reason(verdict))}">${copy.icon}</div>
         <div class="v-body">
           <div class="v-label">${copy.label}</div>
@@ -2819,7 +2868,7 @@ FROM system.replicas WHERE is_readonly;</pre>`,
     wrap.style.display = 'block';
     wrap.innerHTML = `
       <div class="stop-banner">
-        <button class="stop-dismiss" id="stopDismissBtn" data-tooltip="Dismiss this checklist">✕</button>
+        <button class="stop-dismiss" id="stopDismissBtn" data-tooltip="Dismiss this checklist" aria-label="Dismiss this checklist">✕</button>
         <h3>⛔ STOP — before you touch anything</h3>
         <ol>
           <li>Don't restart the affected pod yet — you may lose the exact logs you need to diagnose this.</li>
@@ -3118,21 +3167,21 @@ FROM system.replicas WHERE is_readonly;</pre>`,
 
   function toSnapshotHtml(a){
     const style = document.querySelector('style').outerHTML;
-    return `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>${a.id}</title>${style}</head>
+    return `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>${escapeHtml(a.id)}</title>${style}</head>
       <body style="padding:24px">
-      <h2 style="font-family:var(--mono)">Incident report ${a.id} — ${a.system.toUpperCase()} (${a.timestamp})</h2>
-      <div class="card"><h3>Findings</h3>${a.findings.map(f=>`<div class="finding-row"><div class="dot ${f.sev}"></div><div class="finding-text"><b>${f.title}${sevBadge(f.sev)}${confBadge(f.confidence)}</b><span>${f.note}</span>${f.evidence?`<span class="evidence-quote">"${escapeHtml(evidencePlainText(f.evidence))}"</span>`:''}</div></div>`).join('')}</div>
+      <h2 style="font-family:var(--mono)">Incident report ${escapeHtml(a.id)} — ${escapeHtml(a.system.toUpperCase())} (${escapeHtml(a.timestamp)})</h2>
+      <div class="card"><h3>Findings</h3>${a.findings.map(f=>`<div class="finding-row"><div class="dot ${f.sev}"></div><div class="finding-text"><b>${escapeHtml(f.title)}${sevBadge(f.sev)}${confBadge(f.confidence)}</b><span>${escapeHtml(f.note)}</span>${f.evidence?`<span class="evidence-quote">"${escapeHtml(evidencePlainText(f.evidence))}"</span>`:''}</div></div>`).join('')}</div>
       <h3 class="section-h">Immediate actions</h3>
-      ${a.recs.map(r=>`<div class="card rec">${riskStamp(r.risk)}<h3>${r.title} ${r.done?'✅':''}</h3>
-        <div class="rec-section"><div class="rec-label">Prerequisites</div><p>${r.prereq}</p></div>
+      ${a.recs.map(r=>`<div class="card rec">${riskStamp(r.risk)}<h3>${escapeHtml(r.title)} ${r.done?'✅':''}</h3>
+        <div class="rec-section"><div class="rec-label">Prerequisites</div><p>${escapeHtml(r.prereq)}</p></div>
         <div class="rec-section"><div class="rec-label">Command</div><pre class="cmd">${escapeHtml(r.command)}</pre></div>
-        <div class="rec-section"><div class="rec-label">Consequences</div><p>${r.consequence}</p></div>
-        ${r.assignee?`<p style="color:var(--muted)">Assignee: ${r.assignee}</p>`:''}</div>`).join('')}
-      ${(a.preventive||[]).length ? `<h3 class="section-h">Preventive measures</h3>${a.preventive.map(r=>`<div class="card rec">${riskStamp(r.risk)}<h3>${r.title} ${r.done?'✅':''}</h3>
-        <div class="rec-section"><div class="rec-label">Prerequisites</div><p>${r.prereq}</p></div>
+        <div class="rec-section"><div class="rec-label">Consequences</div><p>${escapeHtml(r.consequence)}</p></div>
+        ${r.assignee?`<p style="color:var(--muted)">Assignee: ${escapeHtml(r.assignee)}</p>`:''}</div>`).join('')}
+      ${(a.preventive||[]).length ? `<h3 class="section-h">Preventive measures</h3>${a.preventive.map(r=>`<div class="card rec">${riskStamp(r.risk)}<h3>${escapeHtml(r.title)} ${r.done?'✅':''}</h3>
+        <div class="rec-section"><div class="rec-label">Prerequisites</div><p>${escapeHtml(r.prereq)}</p></div>
         <div class="rec-section"><div class="rec-label">Command</div><pre class="cmd">${escapeHtml(r.command)}</pre></div>
-        <div class="rec-section"><div class="rec-label">Consequences</div><p>${r.consequence}</p></div>
-        ${r.assignee?`<p style="color:var(--muted)">Assignee: ${r.assignee}</p>`:''}</div>`).join('')}` : ''}
+        <div class="rec-section"><div class="rec-label">Consequences</div><p>${escapeHtml(r.consequence)}</p></div>
+        ${r.assignee?`<p style="color:var(--muted)">Assignee: ${escapeHtml(r.assignee)}</p>`:''}</div>`).join('')}` : ''}
       ${diagramTopology(a.system, a.flags)}${diagramDecisionPath(a.system, a.flags)}
       </body></html>`;
   }
@@ -3408,6 +3457,33 @@ FROM system.replicas WHERE is_readonly;</pre>`,
     download('incident-console-rules.json', JSON.stringify(state.customRules, null, 2), 'application/json');
     toast('Rules exported');
   });
+  // Rules imported from a JSON file are exactly as untrusted as anything
+  // pasted into the log/status boxes — a colleague (or an attacker posing
+  // as one) can hand over a rules file during a live incident, which is
+  // precisely the moment people are least likely to scrutinize it before
+  // clicking Import. sanitizeImportedRule enforces the same shape the "Add
+  // rule" form produces: known fields only, correct types, sane length
+  // caps, and a real regex — so a malformed or hostile entry is dropped
+  // (and reported) instead of silently entering state.customRules, which
+  // ultimately reaches innerHTML via renderFindingsList/recCardHtml.
+  const RULE_STRING_MAX = 2000;
+  function sanitizeImportedRule(raw){
+    if(!raw || typeof raw !== 'object' || Array.isArray(raw)) return { ok:false, reason:'not an object' };
+    const str = (v) => typeof v === 'string' ? v.slice(0, RULE_STRING_MAX).trim() : '';
+    const pattern = str(raw.pattern);
+    const title = str(raw.title);
+    if(!pattern || !title) return { ok:false, reason:'missing pattern or title' };
+    try{ new RegExp(pattern); }catch(e){ return { ok:false, reason:`invalid regex in "${title.slice(0,60)}"` }; }
+    const target = raw.target === 'status' ? 'status' : 'logs';
+    const severity = ['danger','warn','safe'].includes(raw.severity) ? raw.severity : 'warn';
+    const hasRec = !!raw.hasRec;
+    const risk = ['safe','moderate','destructive'].includes(raw.risk) ? raw.risk : 'safe';
+    return { ok:true, rule: {
+      target, pattern, severity, title, note: str(raw.note),
+      hasRec, risk,
+      prereq: str(raw.prereq), command: str(raw.command), consequence: str(raw.consequence)
+    }};
+  }
   document.getElementById('importRulesBtn').addEventListener('click', ()=>document.getElementById('importRulesFile').click());
   document.getElementById('importRulesFile').addEventListener('change', e=>{
     const file = e.target.files[0]; if(!file) return;
@@ -3416,9 +3492,16 @@ FROM system.replicas WHERE is_readonly;</pre>`,
       try{
         const data = JSON.parse(String(reader.result));
         if(!Array.isArray(data)) throw new Error('not an array');
-        state.customRules = state.customRules.concat(data);
+        const accepted = [], rejected = [];
+        data.forEach(item=>{
+          const res = sanitizeImportedRule(item);
+          if(res.ok) accepted.push(res.rule); else rejected.push(res.reason);
+        });
+        state.customRules = state.customRules.concat(accepted);
         renderRules();
-        toast('Imported ' + data.length + ' rule(s)');
+        toast(rejected.length
+          ? `Imported ${accepted.length} rule(s) — skipped ${rejected.length} invalid entr${rejected.length>1?'ies':'y'}`
+          : `Imported ${accepted.length} rule(s)`);
       }catch(err){ toast('Error: file is not a valid JSON rules file'); }
     };
     reader.readAsText(file);
@@ -3691,10 +3774,10 @@ Support`;
   function showQuickCheckModal(system){
     document.getElementById('modalWrap').innerHTML = `
       <div class="modal-backdrop" id="modalBackdrop">
-        <div class="modal-box">
-          <h3>Check if the fix worked</h3>
+        <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+          <h3 id="modalTitle">Check if the fix worked</h3>
           <p style="color:var(--muted); font-size:12px; margin:-6px 0 4px;">Paste the NEW status output the customer just sent (same kind as before — shards/parts/topics describe). We already have what you started with, so you only need to paste the latest one.</p>
-          <textarea id="quickCheckInput" style="min-height:180px;" placeholder="Paste the new status output here"></textarea>
+          <textarea id="quickCheckInput" style="min-height:180px;" placeholder="Paste the new status output here" aria-label="New status output"></textarea>
           <div id="quickCheckResult"></div>
           <div class="modal-actions">
             <button id="modalClose">Close</button>
@@ -3704,6 +3787,7 @@ Support`;
       </div>`;
     document.getElementById('modalClose').addEventListener('click', ()=>document.getElementById('modalWrap').innerHTML='');
     document.getElementById('modalBackdrop').addEventListener('click', e=>{ if(e.target.id==='modalBackdrop') document.getElementById('modalWrap').innerHTML=''; });
+    document.getElementById('quickCheckInput').focus();
     document.getElementById('quickCheckRun').addEventListener('click', ()=>{
       const after = document.getElementById('quickCheckInput').value || '';
       const before = state.current.rawStatus || '';
@@ -3736,9 +3820,9 @@ Support`;
   function showTextModal(title, text, copyToastMsg, sendsToCustomer){
     document.getElementById('modalWrap').innerHTML = `
       <div class="modal-backdrop" id="modalBackdrop">
-        <div class="modal-box">
-          <h3>${escapeHtml(title)}</h3>
-          <textarea id="ticketTextArea" readonly>${escapeHtml(text)}</textarea>
+        <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+          <h3 id="modalTitle">${escapeHtml(title)}</h3>
+          <textarea id="ticketTextArea" readonly aria-label="${escapeHtml(title)} — generated text">${escapeHtml(text)}</textarea>
           <div class="modal-actions">
             <button id="modalClose">Close</button>
             <button class="primary" id="modalCopy">Copy</button>
@@ -3747,6 +3831,7 @@ Support`;
       </div>`;
     document.getElementById('modalClose').addEventListener('click', ()=>document.getElementById('modalWrap').innerHTML='');
     document.getElementById('modalBackdrop').addEventListener('click', e=>{ if(e.target.id==='modalBackdrop') document.getElementById('modalWrap').innerHTML=''; });
+    document.getElementById('modalClose').focus();
     document.getElementById('modalCopy').addEventListener('click', ()=>{
       if(navigator.clipboard) navigator.clipboard.writeText(text).catch(()=>{});
       toast(copyToastMsg || 'Copied');

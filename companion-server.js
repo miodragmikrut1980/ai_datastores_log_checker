@@ -48,6 +48,24 @@ const TOKEN = process.env.COMPANION_TOKEN || crypto.randomBytes(16).toString('he
 
 const NAME_RE = /^[a-zA-Z0-9._-]{1,253}$/; // valid name for namespace/pod/topic
 const VALID_TYPES = new Set(['elasticsearch', 'clickhouse', 'kafka', 'instana']);
+
+// Constant-time token check. A plain `!==` leaks timing information
+// proportional to how many leading bytes match, which in principle lets a
+// remote-enough attacker recover the token byte-by-byte faster than brute
+// force. The server only binds to 127.0.0.1, so the real-world exploitability
+// here is low — but the fix is free, and "only matters for a local server"
+// isn't something worth relying on once the code has to also justify itself
+// in a security review.
+function tokenMatches(presented) {
+  if (typeof presented !== 'string') return false;
+  const a = Buffer.from(presented);
+  const b = Buffer.from(TOKEN);
+  if (a.length !== b.length) {
+    crypto.timingSafeEqual(Buffer.from(TOKEN), Buffer.from(TOKEN));
+    return false;
+  }
+  return crypto.timingSafeEqual(a, b);
+}
 const MAX_BUNDLE_CONCURRENCY = 4;
 
 function validateName(name) {
@@ -205,7 +223,7 @@ const server = http.createServer(async (req, res) => {
 
   if (url.pathname === '/health') { sendJson(res, 200, { ok: true }); return; }
 
-  if (req.headers['x-companion-token'] !== TOKEN) {
+  if (!tokenMatches(req.headers['x-companion-token'])) {
     sendJson(res, 401, { error: 'Invalid or missing token (X-Companion-Token header).' });
     return;
   }

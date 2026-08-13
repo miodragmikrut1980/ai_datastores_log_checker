@@ -7,7 +7,9 @@ const path = require('path');
 
 const files = [
   'incident-console.test.js',
-  'companion-server.test.js'
+  'companion-server.test.js',
+  'security.test.js',
+  'accessibility.test.js'
 ];
 
 let allOk = true;
