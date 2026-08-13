@@ -1736,6 +1736,14 @@ FROM system.replicas WHERE is_readonly FORMAT JSON;</pre>`,
     const hasImagePull = /ImagePullBackOff|ErrImagePull|failed to pull image/i.test(text);
     const hasVolumeIssue = /FailedMount|FailedAttachVolume|MountVolume\.SetUp failed|persistentvolumeclaim.{0,40}(not found|Pending)/i.test(text);
     const hasProbeKill = /(Liveness|Readiness|Startup) probe failed/i.test(text);
+    // A probe warning by itself can be transient. A failed probe followed by
+    // Kubernetes killing the container, CrashLoopBackOff, or a not-ready pod
+    // with repeated restarts is an active recovery/restart loop and must not
+    // be summarized as "Stable — you have time".
+    const hasProbeRestartLoop = hasProbeKill && (
+      /CrashLoopBackOff/i.test(text) ||
+      (/Killing container/i.test(text) && (/\b0\/\d+\b/.test(text) || /\b(?:[3-9]|\d{2,})\s+(?:\d+[smhd]|$)/m.test(text)))
+    );
     const hasNodePressure = /DiskPressure|MemoryPressure|node.{0,20}NotReady|NodeNotReady/i.test(text);
     const hasAnySpecificK8sSignal = hasCrashLoop||hasOOMKilled||hasEvicted||hasImagePull||hasVolumeIssue||hasProbeKill||hasNodePressure;
 
@@ -1781,8 +1789,10 @@ FROM system.replicas WHERE is_readonly FORMAT JSON;</pre>`,
     if(hasVolumeIssue) findings.push({ sev:'danger', confidence:'high', title:'Volume/PVC cannot be mounted',
       note:'The pod is stuck because its disk (PersistentVolume) can\'t attach or mount. The data is most likely intact — the problem is the attachment, not the content.',
       evidence: findEvidence(/FailedMount|FailedAttachVolume|MountVolume\.SetUp failed/i, text) });
-    if(hasProbeKill) findings.push({ sev:'warn', confidence:'medium', title:'Liveness/readiness probe failures',
-      note:'If the datastore is doing a long recovery on startup, an impatient liveness probe can kill it MID-RECOVERY and create a restart loop that looks like a crash but is self-inflicted.',
+    if(hasProbeKill) findings.push({ sev:hasProbeRestartLoop?'danger':'warn', confidence:hasProbeRestartLoop?'high':'medium', title:hasProbeRestartLoop?'Probe is actively restarting the datastore':'Liveness/readiness probe failures',
+      note:hasProbeRestartLoop
+        ? 'The probe failure is accompanied by a container kill/restart signal. Kubernetes may be repeatedly interrupting datastore recovery — investigate now and confirm recovery activity before changing the probe.'
+        : 'If the datastore is doing a long recovery on startup, an impatient liveness probe can kill it MID-RECOVERY and create a restart loop that looks like a crash but is self-inflicted.',
       evidence: findEvidence(/(Liveness|Readiness|Startup) probe failed/i, text) });
     if(hasNodePressure) findings.push({ sev:'danger', confidence:'medium', title:'Node under pressure / NotReady',
       note:'The underlying node has a problem (disk/memory pressure or NotReady). Fixing the pod won\'t help until the node is healthy.',
@@ -2215,7 +2225,7 @@ FROM system.replicas WHERE is_readonly FORMAT JSON;</pre>`,
       note: hasCorrupt?`Found in the logs (table: ${tableName}${partName!=='<part_name>' ? ', part: '+partName : ''}).`:'The cause of the crash may be OOM or a Keeper issue.',
       evidence: hasCorrupt ? findEvidence(/cannot read all data|checksum doesn't match|corrupt/i, logs) : null });
 
-    if(hasReadonlyReplica) findings.push({ sev:'warn', title:'Replica in readonly mode', confidence:'medium', note:'Likely Keeper/ZooKeeper unavailability.' });
+    if(hasReadonlyReplica) findings.push({ sev:'danger', title:'Replica in readonly mode — writes may be affected', confidence:chJson?'high':'medium', note:'The replica is actively readonly, commonly because Keeper/ZooKeeper is unavailable. Treat this as customer-impacting until writes and replica health are verified.' });
     if(hasDetached) findings.push({ sev:'warn', title:'Detached parts exist', confidence:'medium', note:'ClickHouse likely isolated a broken part on its own.' });
     if(hasTooManyParts) findings.push({ sev:'warn', title:'"Too many parts" in the logs', confidence:'high', note:'Merges can\'t keep up with the insert rate — consider your insert batch size.', evidence: findEvidence(/too many parts/i, logs) });
     if(hasMemLimit) findings.push({ sev:'danger', title:'Memory limit exceeded', confidence:'high', note:'A query or merge exceeded memory_limit — check max_memory_usage settings.', evidence: findEvidence(/memory limit.*exceeded/i, logs) });

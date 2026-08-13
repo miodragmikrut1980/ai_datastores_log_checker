@@ -2146,6 +2146,40 @@ async function run() {
     });
   });
 
+  await suite('Urgency regression: ClickHouse readonly replica is not labelled Stable', async () => {
+    const { window, doc } = await loadDom();
+    doc.getElementById('logsInput').value = 'DB::Exception: TABLE_IS_READ_ONLY Replica is in readonly mode';
+    doc.getElementById('statusInput').value =
+      '----- readonly replicas -----\n' +
+      '{"meta":[],"data":[{"database":"default","table":"orders","replica_name":"r1","is_readonly":1}],"rows":1}\n';
+    click(doc.querySelector('#systemPicker button[data-val="clickhouse"]'), window);
+    click(doc.getElementById('analyzeBtn'), window);
+    await wait(300);
+
+    await test('Active readonly state is critical and produces an Act now verdict', async () => {
+      assertIncludes(doc.getElementById('findingsList').textContent, 'writes may be affected');
+      assertIncludes(doc.getElementById('verdictBannerWrap').textContent, 'Act now');
+      assertNotIncludes(doc.getElementById('verdictBannerWrap').textContent, 'Stable');
+    });
+  });
+
+  await suite('Urgency regression: probe-driven restart loop is not labelled Stable', async () => {
+    const { window, doc } = await loadDom();
+    doc.getElementById('logsInput').value =
+      'Liveness probe failed: connection refused\nKilling container clickhouse\nDB::Exception: recovery in progress';
+    doc.getElementById('statusInput').value =
+      'NAME READY STATUS RESTARTS AGE\nclickhouse-0 0/1 Running 14 20m';
+    click(doc.querySelector('#systemPicker button[data-val="clickhouse"]'), window);
+    click(doc.getElementById('analyzeBtn'), window);
+    await wait(300);
+
+    await test('Container-kill and restart evidence escalates the probe finding and blocks action pending evidence', async () => {
+      assertIncludes(doc.getElementById('findingsList').textContent, 'actively restarting the datastore');
+      assertIncludes(doc.getElementById('verdictBannerWrap').textContent, 'Evidence needed');
+      assertNotIncludes(doc.getElementById('verdictBannerWrap').textContent, 'Stable');
+    });
+  });
+
   const ok = summary();
   process.exit(ok ? 0 : 1);
 }

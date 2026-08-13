@@ -1,5 +1,13 @@
 # Incident Toolkit — Instana / ES / ClickHouse / Kafka
 
+## Version 1.3.2 — urgent ClickHouse severity corrections
+
+- An active ClickHouse readonly replica is now critical because writes may be
+  affected; the verdict no longer says `Stable — you have time`.
+- A probe failure becomes critical only when container-kill/restart evidence
+  proves an active datastore recovery loop. An isolated probe warning remains
+  a warning, avoiding unnecessary escalation.
+
 ## Version 1.3.1 — release hardening and real-browser verification
 
 This release removes the duplicated repository copy, runs the real-browser E2E
@@ -389,13 +397,13 @@ npm run test:accessibility
 npm run test:e2e             # real headless-Chrome checks — needs a local Chrome/Chromium, see tests/e2e.test.js
 ```
 
-As of v1.3.1 the automated verification gate contains 259 tests total:
-250 jsdom/integration tests (212 UI + 15 companion-server + 14 security + 9
+As of v1.3.2 the automated verification gate contains 261 tests total:
+252 jsdom/integration tests (214 UI + 15 companion-server + 14 security + 9
 accessibility) and 9 real-browser E2E tests. GitHub Actions installs Chrome and
 runs both `npm test` and `npm run test:e2e` on every push and pull request.
 
 The test suite covers (`tests/`):
-- `incident-console.test.js` — 212 tests against `incident-console.html` via jsdom:
+- `incident-console.test.js` — 214 tests against `incident-console.html` via jsdom:
   analysis for all 3 systems, table parsing, checklist/progress, timeline,
   JSON/ECS logs, diff comparison, custom rules (including the ReDoS warning),
   redacting sensitive data, upload/auto-classification of files, history, export,
