@@ -1,5 +1,34 @@
 # Incident Toolkit — Instana / ES / ClickHouse / Kafka
 
+## Version 1.3.5 — CONFIRM-gate consistency fix, repo housekeeping
+
+Found while answering "where's the unlock box for this command?" — it turned
+out the box was genuinely missing for one specific command, not just hidden:
+
+- **The type-to-confirm CONFIRM gate now consistently covers every
+  data-loss-risking command, not just ones tagged `risk:'destructive'`.**
+  "Promote the healthy replica to primary" (ES) is `risk:'moderate'`, but its
+  actual command is a real `allocate_stale_primary` call with
+  `accept_data_loss:true` — the safety gate correctly required backup/replica
+  evidence for it, but the CONFIRM-gate overlay only checked
+  `r.risk === 'destructive'`, a narrower condition, so this specific
+  data-loss command never got the type-to-confirm friction: once evidence
+  cleared it would render with the same single-click "copy" button as any
+  safe read-only command. Fixed by having the evidence-check logic
+  (`applySafetyModel()`) record the exact same destructive/data-loss
+  determination it already computes onto the recommendation itself
+  (`r.isDataLossCommand`), and having the CONFIRM-gate renderer
+  (`recCardHtml()`) read that instead of re-deriving a narrower one. Also
+  fixes the same gap in the Instana-wrapped-datastore-rec consequence text.
+  3 new regression tests cover blocked → evidence-cleared → CONFIRM-unlock
+  for this exact command.
+- **Removed accidentally-committed release artifacts** — `Archive.zip`
+  (15 MB), `e2e-fix.patch`, and `v1.3.1.bundle` had ended up tracked in the
+  repo in 1.3.2/1.3.4. These are session-transfer artifacts meant to be
+  applied and discarded, not committed; `.gitignore` now excludes
+  `*.bundle`, `*.patch`, and `incident-toolkit*.zip`/`Archive.zip` going
+  forward.
+
 ## Version 1.3.4 — large-bundle and secret-redaction hardening
 
 - Browser uploads are bounded to 25 MB per file and 50 MB per selection, with
@@ -416,13 +445,13 @@ npm run test:accessibility
 npm run test:e2e             # real headless-Chrome checks — needs a local Chrome/Chromium, see tests/e2e.test.js
 ```
 
-As of v1.3.4 the automated verification gate contains 264 tests total:
-255 jsdom/integration tests (216 UI + 16 companion-server + 14 security + 9
+As of v1.3.5 the automated verification gate contains 267 tests total:
+258 jsdom/integration tests (219 UI + 16 companion-server + 14 security + 9
 accessibility) and 9 real-browser E2E tests. GitHub Actions installs Chrome and
 runs both `npm test` and `npm run test:e2e` on every push and pull request.
 
 The test suite covers (`tests/`):
-- `incident-console.test.js` — 216 tests against `incident-console.html` via jsdom:
+- `incident-console.test.js` — 219 tests against `incident-console.html` via jsdom:
   analysis for all 3 systems, table parsing, checklist/progress, timeline,
   JSON/ECS logs, diff comparison, custom rules (including the ReDoS warning),
   redacting sensitive data, upload/auto-classification of files, history, export,
@@ -438,7 +467,9 @@ The test suite covers (`tests/`):
   can't be copied in a rush), the two-click Clear confirmation (armed only
   when there's actually something to lose), the click-to-edit incident ID
   (shared ticket name propagates to History), confidence badges on findings,
-  the type-to-confirm gate on PERMANENT LOSS commands, ES multi-index grouping
+  the type-to-confirm gate on PERMANENT LOSS commands *and* on any
+  `risk:'moderate'` rec whose command text carries real data-loss risk (e.g.
+  `accept_data_loss:true`) — not just ones tagged `risk:'destructive'`, ES multi-index grouping
   (a corrupt/unassigned incident spanning several indices gets a targeted
   recommendation per index, not just the first one), that analysis errors
   surface as a visible finding instead of failing silently, that copy/unlock

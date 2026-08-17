@@ -2081,7 +2081,11 @@ FROM system.replicas WHERE is_readonly FORMAT JSON;</pre>`,
         : analyzeElasticsearch(logs, status);
       inner.findings.forEach(f=> findings.push({ ...f, title:`${datastore.toUpperCase()}: ${f.title}` }));
       inner.recs.forEach(r=> {
-        const destructive = r.risk === 'destructive';
+        // Same isDataLossCommand definition as applySafetyModel()/recCardHtml()
+        // (command-text regex, not just risk==='destructive') — otherwise an
+        // Instana-wrapped accept_data_loss rec would get the milder,
+        // wrong consequence wording below.
+        const destructive = r.risk === 'destructive' || /drop|remove-corrupted|accept_data_loss|delete.*pvc/i.test(String(r.command||''));
         recs.push({ ...r,
           title:`Instana ${datastore}: ${r.title}`,
           prereq: `${r.prereq} Also confirm Instana unit impact, backup/snapshot/replica state, and get customer approval before changes.`,
@@ -2639,7 +2643,11 @@ FROM system.replicas WHERE is_readonly FORMAT JSON;</pre>`,
 
   function recCardHtml(r, idx, cmdPrefix){
     const cmdId = `${cmdPrefix}-${idx}`;
-    const isDestructive = r.risk === 'destructive';
+    // Matches the exact same "destructive" definition applySafetyModel()
+    // uses to decide whether backup evidence is required — see the comment
+    // on r.isDataLossCommand there. Falls back to r.risk === 'destructive'
+    // for any rec that hasn't been through applySafetyModel() yet.
+    const isDestructive = r.isDataLossCommand !== undefined ? r.isDataLossCommand : r.risk === 'destructive';
     const needsApproval = r.risk === 'destructive' || r.risk === 'moderate' || r.requiresApproval;
     const blocked = r.safetyStatus === 'blocked';
     const approved = !!(r.reviewer && r.reviewer.trim()) && !!(r.approver && r.approver.trim());
@@ -4283,6 +4291,17 @@ ${dangers.length ? `Open critical issue${dangers.length>1?'s':''}: ${dangers.map
       const command = String(r.command||'');
       const mutating = /\b(patch|delete|drop|detach|attach|restart|reroute|restore|remove-corrupted|alter|system\s+restart|--execute|--alter|scale)\b/i.test(command);
       const destructive = r.risk === 'destructive' || /drop|remove-corrupted|accept_data_loss|delete.*pvc/i.test(command);
+      // Recorded on the rec itself so recCardHtml() can render the
+      // type-to-confirm CONFIRM gate for this exact same definition of
+      // "destructive" — found via live use: a 'moderate'-risk rec whose
+      // COMMAND contains accept_data_loss:true (ES's literal "yes I might
+      // lose data" flag) was correctly required to show backup evidence
+      // here, but recCardHtml() only checked r.risk === 'destructive' for
+      // whether to show the CONFIRM-to-unlock overlay — so once evidence
+      // cleared, a genuinely data-loss-risking command would render with
+      // a single-click "copy" button, same as any safe read-only one,
+      // with no type-to-confirm friction at all.
+      r.isDataLossCommand = destructive;
       const missing = [];
       if(mutating && !hasStatus) missing.push('current status output');
       if((r.risk === 'moderate' || destructive) && (replicaEvidence === 'unclear')) missing.push(`${replicaLabel} (verified, not just mentioned)`);

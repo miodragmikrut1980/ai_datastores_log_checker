@@ -13,3 +13,13 @@ demo/audio/
 demo/audio-training/
 
 .DS_Store
+
+# Release transfer artifacts (bundles/patches/zips for moving a session's
+# changes onto another machine) — these are meant to be applied and
+# discarded, not committed. One (Archive.zip, 15MB) and a couple of small
+# .bundle/.patch files ended up committed in v1.3.2/v1.3.4 — removed in
+# v1.3.5, ignoring the patterns here so it doesn't happen again.
+*.bundle
+*.patch
+incident-toolkit*.zip
+Archive.zip

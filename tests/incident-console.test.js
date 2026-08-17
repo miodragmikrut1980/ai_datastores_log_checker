@@ -2217,6 +2217,62 @@ async function run() {
     });
   });
 
+  await suite('Regression: a "moderate"-risk rec whose COMMAND contains accept_data_loss still gets the CONFIRM gate', async () => {
+    // "Promote the healthy replica to primary" is risk:'moderate' but its
+    // command is a real ES allocate_stale_primary call with
+    // accept_data_loss:true — a genuine data-loss operation. The safety
+    // gate correctly demands backup/replica evidence for it (via a
+    // command-text regex), but recCardHtml() used to gate the CONFIRM
+    // overlay on r.risk==='destructive' alone — a narrower check — so this
+    // rec never got the type-to-confirm friction: once evidence cleared it
+    // would render with a plain one-click "copy" button, same as a safe
+    // read-only command.
+    const { window, doc } = await loadDom();
+    doc.getElementById('logsInput').value = '[ERROR] CorruptIndexException: checksum failed for segment_3.cfs';
+    // A replica row exists (state r / STARTED) but WITHOUT the literal
+    // keyword "shard"/"replica" co-occurring with a positive word on that
+    // line, so evaluateReplicaEvidence() reads this as 'unclear' -> blocked.
+    doc.getElementById('statusInput').value = 'myindex 0 p UNASSIGNED\nmyindex 0 r STARTED 100 10mb es-data-1';
+    click(doc.querySelector('#systemPicker button[data-val="elasticsearch"]'), window);
+    click(doc.getElementById('analyzeBtn'), window);
+    await wait(300);
+    click(doc.querySelector('.tab[data-tab="preporuke"]'), window);
+
+    await test('While blocked, the command now shows the CONFIRM-gate overlay (disabled "Evidence required" input) instead of being blurred with no unlock UI at all', async () => {
+      const overlay = doc.querySelector('.cmd-gate-overlay');
+      assert(overlay, 'expected a .cmd-gate-overlay for the blocked accept_data_loss command — previously there was none');
+      const gateInput = overlay.querySelector('.cmd-gate-input');
+      assert(gateInput, 'expected a gate input inside the overlay');
+      assert(gateInput.disabled, 'gate input should stay disabled while evidence is missing');
+      assertEqual(gateInput.placeholder, 'Evidence required');
+    });
+
+    // Now supply the missing evidence and re-analyze.
+    doc.getElementById('statusInput').value =
+      'myindex 0 p UNASSIGNED\nmyindex 0 r STARTED 100 10mb es-data-1\n' +
+      'shard allocation confirmed healthy\nbackup snapshot verified';
+    click(doc.getElementById('analyzeBtn'), window);
+    await wait(300);
+    click(doc.querySelector('.tab[data-tab="preporuke"]'), window);
+
+    await test('Once evidence clears, the gate input is enabled and prompts to type CONFIRM (not left as a plain one-click copy button)', async () => {
+      const gateInput = doc.querySelector('.cmd-gate-input');
+      assert(gateInput, 'expected the gate input to still be present once unblocked');
+      assert(!gateInput.disabled, 'gate input should be enabled once evidence is no longer missing');
+      assertEqual(gateInput.placeholder, 'Type CONFIRM to reveal');
+    });
+
+    await test('Typing CONFIRM unlocks it, same as any other destructive command', async () => {
+      const gateInput = doc.querySelector('.cmd-gate-input');
+      const cmdId = gateInput.id.replace('gate-', '');
+      gateInput.value = 'CONFIRM';
+      click(doc.querySelector('.cmd-gate-btn'), window);
+      const pre = doc.getElementById(cmdId);
+      assert(!pre.classList.contains('cmd-locked'), 'should be unlocked after typing CONFIRM');
+      assert(!pre.querySelector('.copy-btn').disabled, 'copy button should be enabled after unlocking');
+    });
+  });
+
   const ok = summary();
   process.exit(ok ? 0 : 1);
 }
